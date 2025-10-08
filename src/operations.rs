@@ -1,25 +1,32 @@
-// use std::marker::PhantomData;
-//
-// use crate::readers::Reader;
-//
-// #[allow(dead_code)]
-// pub struct Operation<R, T>
-// where
-//     R: Reader<T>,
-// {
-//     reader: R,
-//     _marker: PhantomData<T>,
-// }
-//
-//
-// impl<R, T> Operation<R, T>
-// where
-//     R: Reader<T>,
-// {
-//     pub fn new(reader: R) -> Self {
-//         Self {
-//             reader,
-//             _marker: PhantomData,
-//         }
-//     }
-// }
+use futures::StreamExt;
+
+use crate::readers::StreamReader;
+use crate::writers::Writer;
+
+pub struct StreamOperation<R, W>
+where
+    R: StreamReader,
+    W: Writer,
+{
+    reader: R,
+    writer: W,
+}
+
+impl<R, W> StreamOperation<R, W>
+where
+    R: StreamReader,
+    W: Writer,
+    W::Item: From<R::Item>,
+{
+    pub fn new(reader: R, writer: W) -> Self {
+        Self { reader, writer }
+    }
+
+    pub async fn run(&self) {
+        let my_stream = self.reader.stream().await;
+        tokio::pin!(my_stream);
+        while let Some(value) = my_stream.next().await {
+            let _ = self.writer.write(value.into()).await;
+        }
+    }
+}

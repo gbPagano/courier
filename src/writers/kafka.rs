@@ -24,7 +24,7 @@ where
     K: ToBytes + Send,
     V: ToBytes + Send,
 {
-    pub fn new(brokers: &str, topic: String) -> Self {
+    pub fn new(brokers: &str, topic: &str) -> Self {
         let producer: FutureProducer = ClientConfig::new()
             .set("bootstrap.servers", brokers)
             .set("message.timeout.ms", "5000")
@@ -33,7 +33,7 @@ where
 
         Self {
             producer,
-            topic,
+            topic: topic.into(),
             _marker: std::marker::PhantomData,
         }
     }
@@ -44,36 +44,52 @@ where
     K: ToBytes + Send + Sync,
     V: ToBytes + Send + Sync,
 {
-    type Item = Vec<KafkaMessage<K, V>>;
+    type Item = KafkaMessage<K, V>;
     async fn setup(&mut self) -> Result<()> {
         Ok(())
     }
 
-    async fn write(&self, data: Vec<KafkaMessage<K, V>>) -> Result<()> {
-        let futures = data.iter().map(|message| async move {
-            // The send operation on the topic returns a future, which will be
-            // completed once the result or failure from Kafka is received.
-            log::info!("Sending status for message {} received", 1);
-            let delivery_status = self
-                .producer
-                .send(
-                    FutureRecord::to(&self.topic)
-                        .key(&message.key)
-                        .payload(&message.value)
-                        .headers(message.headers.clone()),
-                    Duration::from_secs(0),
-                )
-                .await;
+    async fn write(&self, data: KafkaMessage<K, V>) -> Result<()> {
+        // let futures = data.iter().map(|message| async move {
+        //     // The send operation on the topic returns a future, which will be
+        //     // completed once the result or failure from Kafka is received.
+        //     log::info!("Sending status for message {} received", 1);
+        //     let delivery_status = self
+        //         .producer
+        //         .send(
+        //             FutureRecord::to(&self.topic)
+        //                 .key(&message.key)
+        //                 .payload(&message.value)
+        //                 .headers(message.headers.clone()),
+        //             Duration::from_secs(0),
+        //         )
+        //         .await;
+        //
+        //     // This will be executed when the result is received.
+        //     log::info!("Delivery status for message {} received", 1);
+        //     delivery_status
+        // });
+        //
+        // // This loop will wait until all delivery statuses have been received.
+        // for future in futures {
+        //     log::info!("Future completed. Result: {:?}", future.await);
+        // }
 
-            // This will be executed when the result is received.
-            log::info!("Delivery status for message {} received", 1);
-            delivery_status
-        });
+        log::info!("Sending status for message {} received", 1);
+        let delivery_status = self
+            .producer
+            .send(
+                FutureRecord::to(&self.topic)
+                    .key(&data.key)
+                    .payload(&data.value)
+                    .headers(data.headers.clone()),
+                Duration::from_secs(0),
+            )
+            .await;
 
-        // This loop will wait until all delivery statuses have been received.
-        for future in futures {
-            log::info!("Future completed. Result: {:?}", future.await);
-        }
+        // This will be executed when the result is received.
+        log::info!("Delivery status for message {} received", 1);
+
         Ok(())
     }
 }

@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 use std::time::Duration;
 
-use crate::readers::Reader;
+use crate::readers::StreamReader;
 use anyhow::Result;
 use async_stream::stream;
 use futures::stream::FuturesUnordered;
@@ -78,17 +78,14 @@ impl FromBytes for String {
     }
 }
 
-impl<K, V> Reader for KafkaReader<K, V>
+impl<K, V> StreamReader for KafkaReader<K, V>
 where
     K: ToBytes + Send + Sync + FromBytes + Clone + Debug,
     V: ToBytes + Send + Sync + FromBytes + Clone + Debug,
 {
     type Item = KafkaMessage<K, V>;
-    async fn setup(&mut self) -> Result<()> {
-        Ok(())
-    }
 
-    async fn read(&self) -> impl Stream<Item = KafkaMessage<K, V>> {
+    async fn stream(&self) -> impl Stream<Item = KafkaMessage<K, V>> {
         stream! {
             loop {
                 if let Ok(m) = self.consumer.recv().await {
