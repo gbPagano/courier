@@ -1,24 +1,19 @@
-use std::fmt::Debug;
 use std::time::Duration;
 
 use anyhow::Result;
 use rdkafka::config::ClientConfig;
-use rdkafka::message::ToBytes;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 
-use crate::readers::kafka::KafkaMessage;
+use crate::schemas::Json;
+use crate::schemas::kafka::KafkaMessage;
 use crate::writers::Writer;
 
-pub struct KafkaWriter<K: ToBytes + Send, V: ToBytes + Send> {
+pub struct KafkaWriter<T: Json> {
     producer: FutureProducer,
     topic: String,
-    _marker: std::marker::PhantomData<(K, V)>,
+    _marker: std::marker::PhantomData<T>,
 }
-impl<K, V> KafkaWriter<K, V>
-where
-    K: ToBytes + Send,
-    V: ToBytes + Send,
-{
+impl<T: Json> KafkaWriter<T> {
     pub fn new(brokers: &str, topic: &str) -> Self {
         let producer: FutureProducer = ClientConfig::new()
             .set("bootstrap.servers", brokers)
@@ -34,25 +29,18 @@ where
     }
 }
 
-impl<K, V> Writer for KafkaWriter<K, V>
-where
-    K: ToBytes + Send + Sync + Debug,
-    V: ToBytes + Send + Sync + Debug,
-{
-    type Item = KafkaMessage<K, V>;
-    async fn setup(&mut self) -> Result<()> {
-        Ok(())
-    }
+impl<T: Json> Writer for KafkaWriter<T> {
+    type Item = KafkaMessage<T>;
 
-    async fn write(&self, data: KafkaMessage<K, V>) -> Result<()> {
+    async fn write(&self, data: KafkaMessage<T>) -> Result<()> {
         log::debug!("Sending message to topic: {}", self.topic);
+
         let delivery_status = self
             .producer
             .send(
                 FutureRecord::to(&self.topic)
                     .key(&data.key)
-                    .payload(&data.value)
-                    .headers(data.headers.clone()),
+                    .payload(&serde_json::to_string(&data.value)?),
                 Duration::from_secs(0),
             )
             .await;

@@ -1,34 +1,34 @@
 use std::time::Duration;
 
-use tokio::time;
+use courier::readers::kafka::KafkaReader;
+use courier::writers::kafka::KafkaWriter;
+use serde::{Deserialize, Serialize};
 
-async fn task_that_takes_a_second() {
-    let time = time::Instant::now();
-    println!("{:?}", time);
-    println!("hello");
-    // time::sleep(time::Duration::from_secs(3)).await
+use courier::operations::{self, Operation, StreamOperation};
+use courier::readers::api::ApiReader;
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ApiItalo {
+    message: String,
 }
 
 #[tokio::main]
 async fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    let api_reader = ApiReader::new("http://192.168.1.2:8000").with_type::<ApiItalo>();
+    let kafka_reader: KafkaReader<ApiItalo> =
+        KafkaReader::new("localhost:9092", "group-id-1", vec!["simple-producer"]);
 
-    let mut interval = time::interval(time::Duration::from_secs(2));
-    for _i in 0..5 {
-        let start = std::time::Instant::now();
+    let writer: KafkaWriter<ApiItalo> = KafkaWriter::new("localhost:9092", "simple-producer2");
 
-        task_that_takes_a_second().await;
+    // let operation = StreamOperation::new(kafka_reader, writer);
+    let operation = Operation::new(
+        "Italo-helloworld-2",
+        api_reader,
+        writer,
+        Duration::from_secs(5),
+    );
 
-        let elapsed = start.elapsed();
-        let dur = Duration::from_secs(2);
-        if elapsed > dur {
-            log::warn!(
-                "Loop iteration took {:?}, which exceeds the configured interval of {:?}",
-                elapsed,
-                dur
-            );
-        }
-        interval.tick().await;
-    }
+    operation.run().await;
 }
 

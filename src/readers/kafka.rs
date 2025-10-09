@@ -1,48 +1,23 @@
-use std::fmt::Debug;
+use std::any::type_name;
 use std::time::Duration;
 
-use crate::readers::StreamReader;
-use anyhow::Result;
 use async_stream::stream;
-use futures::stream::FuturesUnordered;
-use futures::{StreamExt, TryStreamExt};
+use rdkafka::Message;
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{Consumer, StreamConsumer};
-use rdkafka::message::{OwnedHeaders, ToBytes};
-use rdkafka::producer::{FutureProducer, FutureRecord};
-use rdkafka::{Message, message};
+use tokio::time::sleep;
 use tokio_stream::Stream;
 
-#[derive(Debug)]
-pub struct KafkaMessage<K: ToBytes + Send, V: ToBytes + Send> {
-    pub key: K,
-    pub value: V,
-    pub headers: OwnedHeaders,
-}
-impl<K, V> KafkaMessage<K, V>
-where
-    K: ToBytes + Send,
-    V: ToBytes + Send,
-{
-    pub fn new(key: K, value: V, headers: OwnedHeaders) -> Self {
-        Self {
-            key,
-            value,
-            headers,
-        }
-    }
+use crate::readers::StreamReader;
+use crate::schemas::Json;
+use crate::schemas::kafka::KafkaMessage;
+
+pub struct KafkaReader<T> {
+    consumer: StreamConsumer,
+    _marker: std::marker::PhantomData<T>,
 }
 
-pub struct KafkaReader<K, V> {
-    consumer: StreamConsumer,
-    _marker: std::marker::PhantomData<(K, V)>,
-    // topic: String,
-}
-impl<K, V> KafkaReader<K, V>
-where
-    K: ToBytes + Send,
-    V: ToBytes + Send,
-{
+impl<T: Json> KafkaReader<T> {
     pub fn new(brokers: &str, group_id: &str, topics: Vec<&str>) -> Self {
         let consumer: StreamConsumer = ClientConfig::new()
             .set("group.id", group_id)
@@ -64,39 +39,90 @@ where
     }
 }
 
-pub trait FromBytes: Sized {
-    /// The error type that will be returned if the conversion fails.
-    // type Error;
-    /// Tries to convert the provided byte slice into a different type.
-    fn from_bytes(_: &[u8]) -> Result<Self>;
-}
+impl<T: Json> StreamReader for KafkaReader<T> {
+    type Item = KafkaMessage<T>;
 
-impl FromBytes for String {
-    // type Error = str::Utf8Error;
-    fn from_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
-        Ok(String::from_utf8(bytes.to_vec())?)
-    }
-}
-
-impl<K, V> StreamReader for KafkaReader<K, V>
-where
-    K: ToBytes + Send + Sync + FromBytes + Clone + Debug,
-    V: ToBytes + Send + Sync + FromBytes + Clone + Debug,
-{
-    type Item = KafkaMessage<K, V>;
-
-    async fn stream(&self) -> impl Stream<Item = KafkaMessage<K, V>> {
+    async fn stream(&self) -> impl Stream<Item = Self::Item> {
         stream! {
             loop {
-                if let Ok(m) = self.consumer.recv().await {
-                    let m = m.detach();
+                log::debug!("Waiting for next message");
+                match self.consumer.recv().await {
+                    Ok(m) => {
+                        let m = m.detach();
+                        let offset = m.offset();
+                        let partition = m.partition();
+                        let topic = m.topic();
 
-                    let key = K::from_bytes(m.key().unwrap()).ok().unwrap().to_owned();
-                    let value = V::from_bytes(m.payload().unwrap()).ok().unwrap().to_owned();
-                    let message = KafkaMessage::new(key, value, OwnedHeaders::new());
-                    log::info!("Message: {:?}", message);
+                        log::debug!(
+                            "Received message from topic: {} (partition {}, offset {})",
+                            topic, partition, offset
+                        );
 
-                    yield message;
+                        // Parse key
+                        let key = match m.key() {
+                            Some(k) => match std::str::from_utf8(k) {
+                                Ok(key_str) => key_str.trim(),
+                                Err(e) => {
+                                    log::error!(
+                                        "Failed to parse message key as UTF-8 at offset {}: {}",
+                                        offset, e
+                                    );
+                                    continue;
+                                }
+                            },
+                            None => {
+                                let key_str = type_name::<Self>();
+                                log::warn!(
+                                    "Message at offset {} has no key, using default key: {}",
+                                    offset,
+                                    key_str
+                                );
+                                key_str
+                            }
+                        };
+
+                        // Parse payload
+                        let value_str = match m.payload() {
+                            Some(p) => match std::str::from_utf8(p) {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    log::error!(
+                                        "Failed to parse message payload as UTF-8 at offset {}: {}",
+                                        offset, e
+                                    );
+                                    continue;
+                                }
+                            },
+                            None => {
+                                log::error!("Message at offset {} has no payload", offset);
+                                continue;
+                            }
+                        };
+
+                        // Deserialize JSON
+                        let value: T = match serde_json::from_str(value_str) {
+                            Ok(v) => v,
+                            Err(_) => {
+                                log::error!(
+                                    "Failed to deserialize JSON at offset {}. Payload: {}",
+                                    offset, value_str
+                                );
+                                continue;
+                            }
+                        };
+
+                        let message = KafkaMessage::new(&key, value);
+                        log::debug!(
+                            "Processed message from topic: {} (partition: {}, offset: {})",
+                            topic, partition, offset
+                        );
+
+                        yield message;
+                    }
+                    Err(e) => {
+                        log::error!("Error receiving message from Kafka: {:?}", e);
+                        sleep(Duration::from_millis(100)).await;
+                    }
                 }
             }
         }
