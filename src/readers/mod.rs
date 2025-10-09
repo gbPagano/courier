@@ -2,6 +2,7 @@ use anyhow::Result;
 use std::future::Future;
 use tokio_stream::Stream;
 
+pub mod api;
 pub mod kafka;
 
 pub trait StreamReader {

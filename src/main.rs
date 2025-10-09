@@ -1,26 +1,34 @@
-use async_stream::stream;
 use std::time::Duration;
-use tokio_stream::{Stream, StreamExt};
 
-// Esta função retorna uma implementação de Stream
-fn count_down_stream() -> impl Stream<Item = u32> {
-    stream! {
-        for i in (1..=5).rev() {
-            println!("Gerando valor {}...", i);
-            tokio::time::sleep(Duration::from_millis(300)).await;
-            yield i;
-        }
-    }
+use tokio::time;
+
+async fn task_that_takes_a_second() {
+    let time = time::Instant::now();
+    println!("{:?}", time);
+    println!("hello");
+    // time::sleep(time::Duration::from_secs(3)).await
 }
 
 #[tokio::main]
 async fn main() {
-    // Criamos a stream chamando a função
-    let my_stream = count_down_stream();
-    tokio::pin!(my_stream);
-    // Consumimos os valores
-    while let Some(value) = my_stream.next().await {
-        println!("Valor da stream: {}", value);
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
+    let mut interval = time::interval(time::Duration::from_secs(2));
+    for _i in 0..5 {
+        let start = std::time::Instant::now();
+
+        task_that_takes_a_second().await;
+
+        let elapsed = start.elapsed();
+        let dur = Duration::from_secs(2);
+        if elapsed > dur {
+            log::warn!(
+                "Loop iteration took {:?}, which exceeds the configured interval of {:?}",
+                elapsed,
+                dur
+            );
+        }
+        interval.tick().await;
     }
-    println!("Contagem regressiva finalizada!");
 }
+
