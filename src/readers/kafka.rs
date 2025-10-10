@@ -46,6 +46,8 @@ impl<T: Json> StreamReader for KafkaReader<T> {
         stream! {
             loop {
                 log::debug!("Waiting for next message");
+                let start = std::time::Instant::now();
+
                 match self.consumer.recv().await {
                     Ok(m) => {
                         let m = m.detach();
@@ -54,14 +56,18 @@ impl<T: Json> StreamReader for KafkaReader<T> {
                         let topic = m.topic();
 
                         log::debug!(
-                            "Received message from topic: {} (partition {}, offset {})",
+                            "Received message from topic '{}': (partition: {}, offset: {})",
                             topic, partition, offset
                         );
+                        log::trace!("Message received after {:?}", start.elapsed());
 
                         // Parse key
                         let key = match m.key() {
                             Some(k) => match std::str::from_utf8(k) {
-                                Ok(key_str) => key_str.trim(),
+                                Ok(key_str) => {
+                                    log::trace!("Key at offset {}: {}", offset, key_str.trim());
+                                    key_str.trim()
+                                },
                                 Err(e) => {
                                     log::error!(
                                         "Failed to parse message key as UTF-8 at offset {}: {}",
@@ -98,6 +104,7 @@ impl<T: Json> StreamReader for KafkaReader<T> {
                                 continue;
                             }
                         };
+                        log::trace!("Raw payload at offset {}: {}", offset, value_str);
 
                         // Deserialize JSON
                         let value: T = match serde_json::from_str(value_str) {
@@ -111,9 +118,10 @@ impl<T: Json> StreamReader for KafkaReader<T> {
                             }
                         };
 
+                        log::trace!("Payload deserialized at offset {}: {:?}", offset, value);
                         let message = KafkaMessage::new(&key, value);
                         log::debug!(
-                            "Processed message from topic: {} (partition: {}, offset: {})",
+                            "Processed message from topic '{}': (partition: {}, offset: {})",
                             topic, partition, offset
                         );
 

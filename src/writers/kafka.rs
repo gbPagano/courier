@@ -35,24 +35,47 @@ impl<T: Json> Writer for KafkaWriter<T> {
     async fn write(&self, data: KafkaMessage<T>) -> Result<()> {
         log::debug!("Sending message to topic: {}", self.topic);
 
+        let payload = serde_json::to_string(&data.value).map_err(|e| {
+            log::error!(
+                "Failed to serialize message for topic '{}': {}",
+                self.topic,
+                e
+            );
+            e
+        })?;
+        log::trace!(
+            "Serialized payload for topic '{}': {:?}",
+            self.topic,
+            payload
+        );
+
         let delivery_status = self
             .producer
             .send(
                 FutureRecord::to(&self.topic)
                     .key(&data.key)
-                    .payload(&serde_json::to_string(&data.value)?),
+                    .payload(&payload),
                 Duration::from_secs(0),
             )
             .await;
 
         match delivery_status {
             Ok(status) => {
-                log::debug!("Delivered to topic: {} - {:?}", self.topic, status);
+                log::debug!(
+                    "Delivered to topic '{}': (partition: {}, offset: {})",
+                    self.topic,
+                    status.partition,
+                    status.offset
+                );
                 Ok(())
             }
             Err((e, _)) => {
-                log::error!("{:?}", e);
-                Err(anyhow::anyhow!("KafkaError"))
+                log::error!(
+                    "Failed to deliver message to topic '{}': {:?}",
+                    self.topic,
+                    e
+                );
+                Err(anyhow::anyhow!("KafkaError: {:?}", e))
             }
         }
     }

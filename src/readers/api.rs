@@ -49,14 +49,23 @@ where
                 return Err(e.into());
             }
         };
+        log::trace!(
+            "Response received from {} with status: {}",
+            self.url,
+            response.status()
+        );
 
         if !response.status().is_success() {
             log::error!("HTTP error {}: {}", response.status(), self.url);
-            return Err(anyhow!("HTTP error"));
+            return Err(anyhow!("HTTP error: {}", response.status()));
         }
 
-        let data: T = response.json().await?;
-        log::debug!("Data received from {}: {:?}", self.url, data);
+        let data: T = response.json().await.map_err(|e| {
+            log::error!("Failed to parse JSON from {}: {}", self.url, e);
+            e
+        })?;
+        log::debug!("Successfully retrieved data from: {}", self.url);
+        log::trace!("Received payload: {:?}", data);
 
         Ok(data)
     }
