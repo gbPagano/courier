@@ -1,3 +1,6 @@
+use async_trait::async_trait;
+use std::future::Future;
+use std::pin::Pin;
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
@@ -6,7 +9,12 @@ use tokio::time::{Interval, MissedTickBehavior, interval, sleep};
 use crate::readers::{Reader, StreamReader};
 use crate::writers::Writer;
 
-pub struct Operation<R, W>
+#[async_trait]
+pub trait Operation: Send + Sync {
+    async fn run(&self);
+}
+
+pub struct IntervalOperation<R, W>
 where
     R: Reader,
     W: Writer,
@@ -17,7 +25,7 @@ where
     id: String,
 }
 
-impl<R, W> Operation<R, W>
+impl<R, W> IntervalOperation<R, W>
 where
     R: Reader,
     W: Writer,
@@ -31,8 +39,16 @@ where
             id: id.into(),
         }
     }
+}
 
-    pub async fn run(&self) {
+#[async_trait]
+impl<R, W> Operation for IntervalOperation<R, W>
+where
+    R: Reader,
+    W: Writer,
+    W::Item: From<R::Item>,
+{
+    async fn run(&self) {
         let mut interval = interval(self.interval);
         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
         interval.tick().await; // The first tick completes immediately.
@@ -101,8 +117,16 @@ where
             id: id.into(),
         }
     }
+}
 
-    pub async fn run(&self) {
+#[async_trait]
+impl<R, W> Operation for StreamOperation<R, W>
+where
+    R: StreamReader,
+    W: Writer,
+    W::Item: From<R::Item>,
+{
+    async fn run(&self) {
         log::info!("[{}] Starting stream processing", self.id);
 
         let stream = self.reader.stream().await;

@@ -1,16 +1,18 @@
 use std::any::type_name;
 use std::future::Future;
+use std::pin::Pin;
 
 use anyhow::Result;
+use async_trait::async_trait;
 use tokio_stream::Stream;
 
 pub mod api;
 pub mod kafka;
 
-pub trait StreamReader {
-    type Item;
+pub trait StreamReader: Sync + Send {
+    type Item: Send;
 
-    fn stream(&self) -> impl Future<Output = impl Stream<Item = Self::Item>> + Send;
+    fn stream(&self) -> impl Future<Output = impl Stream<Item = Self::Item> + Send> + Send;
 
     fn set_id(&mut self, _id: &'static str) {}
 
@@ -19,10 +21,11 @@ pub trait StreamReader {
     }
 }
 
-pub trait Reader {
-    type Item;
+#[async_trait]
+pub trait Reader: Sync + Send {
+    type Item: Send;
 
-    fn read(&self) -> impl Future<Output = Result<Self::Item>> + Send;
+    async fn read(&self) -> Result<Self::Item>;
 
     fn set_id(&mut self, _id: &str) {}
 

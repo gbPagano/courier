@@ -1,6 +1,7 @@
 use std::fmt::Debug;
 
 use anyhow::{Result, anyhow};
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -27,6 +28,7 @@ impl ApiReader<Value> {
     }
 }
 
+#[async_trait]
 impl<T> Reader for ApiReader<T>
 where
     T: Serialize + for<'de> Deserialize<'de> + Send + Sync + Debug,

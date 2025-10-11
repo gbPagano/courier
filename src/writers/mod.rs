@@ -5,8 +5,8 @@ use anyhow::Result;
 
 pub mod kafka;
 
-pub trait Writer {
-    type Item;
+pub trait Writer: Sync + Send {
+    type Item: Send;
 
     fn write(&self, data: Self::Item) -> impl Future<Output = Result<()>> + Send;
 
