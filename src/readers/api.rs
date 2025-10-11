@@ -67,7 +67,7 @@ where
             e
         })?;
         log::debug!("Successfully retrieved data from: {}", self.url);
-        log::trace!("Received payload: {:?}", data);
+        log::trace!("Received payload: {data:?}");
 
         Ok(data)
     }

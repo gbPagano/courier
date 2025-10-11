@@ -4,9 +4,9 @@ use courier::readers::kafka::KafkaReader;
 use courier::writers::kafka::KafkaWriter;
 use serde::{Deserialize, Serialize};
 
-use courier::Courier;
 use courier::operations::{IntervalOperation, StreamOperation};
 use courier::readers::api::ApiReader;
+use courier::{Courier, courier};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ApiItalo {
@@ -39,12 +39,6 @@ async fn main() {
         Duration::from_secs(1),
     );
 
-    let runner = Courier::new(vec![
-        Box::new(operation1),
-        Box::new(operation2),
-        Box::new(operation3),
-    ]);
+    let runner: Courier = courier![operation1, operation2, operation3];
     runner.run().await;
-
-    // operation.run().await;
 }

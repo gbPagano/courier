@@ -13,6 +13,7 @@ pub struct KafkaWriter<T: Json> {
     topic: String,
     _marker: std::marker::PhantomData<T>,
 }
+
 impl<T: Json> KafkaWriter<T> {
     pub fn new(brokers: &str, topic: &str) -> Self {
         let producer: FutureProducer = ClientConfig::new()
@@ -37,17 +38,12 @@ impl<T: Json> Writer for KafkaWriter<T> {
 
         let payload = serde_json::to_string(&data.value).map_err(|e| {
             log::error!(
-                "Failed to serialize message for topic '{}': {}",
+                "Failed to serialize message for topic '{}': {e}",
                 self.topic,
-                e
             );
             e
         })?;
-        log::trace!(
-            "Serialized payload for topic '{}': {:?}",
-            self.topic,
-            payload
-        );
+        log::trace!("Serialized payload for topic '{}': {payload:?}", self.topic);
 
         let delivery_status = self
             .producer
@@ -70,12 +66,8 @@ impl<T: Json> Writer for KafkaWriter<T> {
                 Ok(())
             }
             Err((e, _)) => {
-                log::error!(
-                    "Failed to deliver message to topic '{}': {:?}",
-                    self.topic,
-                    e
-                );
-                Err(anyhow::anyhow!("KafkaError: {:?}", e))
+                log::error!("Failed to deliver message to topic '{}': {e:?}", self.topic,);
+                Err(anyhow::anyhow!("KafkaError: {e:?}"))
             }
         }
     }

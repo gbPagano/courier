@@ -1,9 +1,10 @@
+use futures::future;
+use operations::Operation;
+
 pub mod operations;
 pub mod readers;
 pub mod schemas;
 pub mod writers;
-
-use operations::Operation;
 
 pub struct Courier {
     operations: Vec<Box<dyn Operation>>,
@@ -15,12 +16,22 @@ impl Courier {
     }
 
     pub async fn run(self) {
+        let mut handles = Vec::new();
+
         for op in self.operations {
-            tokio::spawn(async move {
+            let handle = tokio::spawn(async move {
                 op.run().await;
             });
+            handles.push(handle);
         }
 
-        loop {}
+        future::join_all(handles).await;
     }
+}
+
+#[macro_export]
+macro_rules! courier {
+    ($($op:expr),* $(,)?) => {
+        Courier::new(vec![$(Box::new($op)),*])
+    };
 }

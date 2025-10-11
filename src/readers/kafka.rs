@@ -56,8 +56,7 @@ impl<T: Json> StreamReader for KafkaReader<T> {
                         let topic = m.topic();
 
                         log::debug!(
-                            "Received message from topic '{}': (partition: {}, offset: {})",
-                            topic, partition, offset
+                            "Received message from topic '{topic}': (partition: {partition}, offset: {offset})",
                         );
                         log::trace!("Message received after {:?}", start.elapsed());
 
@@ -65,13 +64,12 @@ impl<T: Json> StreamReader for KafkaReader<T> {
                         let key = match m.key() {
                             Some(k) => match std::str::from_utf8(k) {
                                 Ok(key_str) => {
-                                    log::trace!("Key at offset {}: {}", offset, key_str.trim());
+                                    log::trace!("Key at offset {offset}: {}", key_str.trim());
                                     key_str.trim()
                                 },
                                 Err(e) => {
                                     log::error!(
-                                        "Failed to parse message key as UTF-8 at offset {}: {}",
-                                        offset, e
+                                        "Failed to parse message key as UTF-8 at offset {offset}: {e}",
                                     );
                                     continue;
                                 }
@@ -79,9 +77,7 @@ impl<T: Json> StreamReader for KafkaReader<T> {
                             None => {
                                 let key_str = type_name::<Self>();
                                 log::warn!(
-                                    "Message at offset {} has no key, using default key: {}",
-                                    offset,
-                                    key_str
+                                    "Message at offset {offset} has no key, using default key: {key_str}",
                                 );
                                 key_str
                             }
@@ -93,42 +89,39 @@ impl<T: Json> StreamReader for KafkaReader<T> {
                                 Ok(v) => v,
                                 Err(e) => {
                                     log::error!(
-                                        "Failed to parse message payload as UTF-8 at offset {}: {}",
-                                        offset, e
+                                        "Failed to parse message payload as UTF-8 at offset {offset}: {e}",
                                     );
                                     continue;
                                 }
                             },
                             None => {
-                                log::error!("Message at offset {} has no payload", offset);
+                                log::error!("Message at offset {offset} has no payload");
                                 continue;
                             }
                         };
-                        log::trace!("Raw payload at offset {}: {}", offset, value_str);
+                        log::trace!("Raw payload at offset {offset}: {value_str}");
 
                         // Deserialize JSON
                         let value: T = match serde_json::from_str(value_str) {
                             Ok(v) => v,
                             Err(_) => {
                                 log::error!(
-                                    "Failed to deserialize JSON at offset {}. Payload: {}",
-                                    offset, value_str
+                                    "Failed to deserialize JSON at offset {offset}. Payload: {value_str}",
                                 );
                                 continue;
                             }
                         };
 
-                        log::trace!("Payload deserialized at offset {}: {:?}", offset, value);
-                        let message = KafkaMessage::new(&key, value);
+                        log::trace!("Payload deserialized at offset {offset}: {value:?}");
+                        let message = KafkaMessage::new(key, value);
                         log::debug!(
-                            "Processed message from topic '{}': (partition: {}, offset: {})",
-                            topic, partition, offset
+                            "Processed message from topic '{topic}': (partition: {partition}, offset: {offset})",
                         );
 
                         yield message;
                     }
                     Err(e) => {
-                        log::error!("Error receiving message from Kafka: {:?}", e);
+                        log::error!("Error receiving message from Kafka: {e:?}");
                         sleep(Duration::from_millis(100)).await;
                     }
                 }

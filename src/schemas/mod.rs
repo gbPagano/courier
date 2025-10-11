@@ -3,7 +3,6 @@ use std::fmt::Debug;
 
 use serde::{Deserialize, Serialize};
 
-pub mod bytes;
 pub mod kafka;
 
 pub trait Json: Serialize + for<'de> Deserialize<'de> + Send + Sync + Debug {}
