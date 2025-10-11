@@ -22,7 +22,7 @@ pub trait StreamReader: Sync + Send {
 
 #[async_trait]
 pub trait Reader: Sync + Send {
-    type Item: Send;
+    type Item: Send + Sync;
 
     async fn read(&self) -> Result<Self::Item>;
 

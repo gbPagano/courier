@@ -4,11 +4,12 @@ use courier::readers::kafka::KafkaReader;
 use courier::writers::kafka::KafkaWriter;
 use serde::{Deserialize, Serialize};
 
-use courier::operations::{IntervalOperation, StreamOperation};
+use courier::operations::{IntervalFanoutOperation, IntervalOperation, StreamOperation};
 use courier::readers::api::ApiReader;
 use courier::{Courier, courier};
+use serde_json::Value;
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ApiItalo {
     message: String,
 }
@@ -16,29 +17,35 @@ pub struct ApiItalo {
 #[tokio::main]
 async fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    let api_reader = ApiReader::new("http://192.168.1.4:8000").with_type::<ApiItalo>();
-    let api_reader2 = ApiReader::new("http://192.168.1.4:8000").with_type::<ApiItalo>();
-    let kafka_reader: KafkaReader<ApiItalo> =
-        KafkaReader::new("localhost:9092", "group-id-1", vec!["simple-producer"]);
+    let api_reader = ApiReader::new("http://192.168.47.204:8000").with_type::<ApiItalo>();
+    // let api_reader2 = ApiReader::new("http://192.168.1.4:8000").with_type::<ApiItalo>();
+    // let kafka_reader: KafkaReader<ApiItalo> =
+    // KafkaReader::new("localhost:9092", "group-id-1", vec!["simple-producer"]);
 
     let writer: KafkaWriter<ApiItalo> = KafkaWriter::new("localhost:9092", "simple-producer2");
     let writer2: KafkaWriter<ApiItalo> = KafkaWriter::new("localhost:9092", "simple-producer");
     let writer3: KafkaWriter<ApiItalo> = KafkaWriter::new("localhost:9092", "simple-producer");
 
-    let operation1 = StreamOperation::new("kafka-kafka", kafka_reader, writer);
-    let operation2 = IntervalOperation::new(
-        "Italo-helloworld-2",
-        api_reader,
-        writer2,
-        Duration::from_secs(5),
-    );
-    let operation3 = IntervalOperation::new(
-        "Italo-helloworld-3",
-        api_reader2,
-        writer3,
-        Duration::from_secs(1),
-    );
+    // let operation1 = StreamOperation::new("kafka-kafka", kafka_reader, writer);
+    // let operation2 = IntervalOperation::new(
+    //     "Italo-helloworld-2",
+    //     api_reader,
+    //     writer2,
+    //     Duration::from_secs(5),
+    // );
+    // let operation3 = IntervalOperation::new(
+    //     "Italo-helloworld-3",
+    //     api_reader2,
+    //     writer3,
+    //     Duration::from_secs(1),
+    // );
 
-    let runner: Courier = courier![operation1, operation2, operation3];
+    let operation4 =
+        IntervalFanoutOperation::new("api->multi-writers", api_reader, Duration::from_secs(3))
+            .with_writer(writer)
+            .with_writer(writer2);
+
+    // let runner: Courier = courier![operation1, operation2, operation3];
+    let runner: Courier = courier![operation4];
     runner.run().await;
 }

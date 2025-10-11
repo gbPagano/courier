@@ -1,14 +1,15 @@
 use std::any::type_name;
-use std::future::Future;
 
 use anyhow::Result;
+use async_trait::async_trait;
 
 pub mod kafka;
 
+#[async_trait]
 pub trait Writer: Sync + Send {
     type Item: Send;
 
-    fn write(&self, data: Self::Item) -> impl Future<Output = Result<()>> + Send;
+    async fn write(&self, data: Self::Item) -> Result<()>;
 
     fn set_id(&mut self, _id: &str) {}
 

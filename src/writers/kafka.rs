@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use anyhow::Result;
+use async_trait::async_trait;
 use rdkafka::config::ClientConfig;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 
@@ -30,6 +31,7 @@ impl<T: Json> KafkaWriter<T> {
     }
 }
 
+#[async_trait]
 impl<T: Json> Writer for KafkaWriter<T> {
     type Item = KafkaMessage<T>;
 
