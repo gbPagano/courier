@@ -1,0 +1,57 @@
+# Operation 1
+[[operations]]
+name = "kafka->kafka"
+type = "stream"
+
+[operations.reader]
+type = "kafka"
+brokers = "localhost:9092"
+group_id = "user-events-consumer"
+topics = ["topic1"]
+data_type = "Value"
+
+[operations.writer]
+type = "kafka"
+brokers = "localhost:9092"
+topic = "topic2"
+data_type = "Value"
+
+# Operation 2
+[[operations]]
+name = "apiitalo->kafka"
+type = "interval"
+interval_secs = 3
+
+[operations.reader]
+type = "api"
+url = "http://192.168.47.204:8000"
+data_type = "Value"
+
+[operations.writer]
+type = "kafka"
+brokers = "localhost:9092"
+topic = "topic1"
+data_type = "Value"
+
+# Operation 3
+[[operations]]
+name = "api->multi-kakfa"
+type = "interval_fanout"
+interval_secs = 5
+
+[operations.reader]
+type = "api"
+url = "http://192.168.47.204:8000"
+data_type = "Value"
+
+[[operations.writers]]
+type = "kafka"
+brokers = "localhost:9092"
+topic = "topic3"
+data_type = "Value"
+
+[[operations.writers]]
+type = "kafka"
+brokers = "localhost:9092"
+topic = "topic4"
+data_type = "Value"
