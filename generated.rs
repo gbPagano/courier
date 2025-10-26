@@ -1,8 +1,8 @@
-use courier::Courier;
 use courier::operations::*;
 use courier::readers::api::ApiReader;
 use courier::readers::kafka::KafkaReader;
 use courier::writers::kafka::KafkaWriter;
+use courier::Courier;
 use serde_json::Value;
 use std::time::Duration;
 pub fn courier_from_config() -> Courier {
@@ -31,4 +31,3 @@ pub fn courier_from_config() -> Courier {
     }
     Courier::new(operations)
 }
-

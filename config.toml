@@ -1,7 +1,7 @@
 # Operation 1
 [[operations]]
 name = "kafka->kafka"
-type = "stream"
+type = "Stream"
 
 [operations.reader]
 type = "kafka"
@@ -19,7 +19,7 @@ data_type = "Value"
 # Operation 2
 [[operations]]
 name = "apiitalo->kafka"
-type = "interval"
+type = "Interval"
 interval_secs = 3
 
 [operations.reader]
@@ -36,7 +36,7 @@ data_type = "Value"
 # Operation 3
 [[operations]]
 name = "api->multi-kakfa"
-type = "interval_fanout"
+type = "IntervalFanout"
 interval_secs = 5
 
 [operations.reader]
