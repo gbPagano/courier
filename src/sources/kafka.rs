@@ -1,11 +1,14 @@
+use anyhow::Result;
 use async_trait::async_trait;
 use rdkafka::Message;
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{Consumer, StreamConsumer};
+use serde::Deserialize;
 use serde_json::Value;
 use tokio::sync::mpsc::Sender;
 use tokio_util::sync::CancellationToken;
 
+use crate::config::parse_config;
 use crate::envelope::Envelope;
 use crate::sources::Source;
 
@@ -121,6 +124,26 @@ impl Source for KafkaSource {
             }
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct KafkaSourceConfig {
+    brokers: String,
+    group_id: String,
+    topics: Vec<String>,
+}
+
+/// Registry factory for [`KafkaSource`]. Registered by
+/// `courier::registry::register_builtin` under kind `"kafka"`.
+pub fn kafka_source_factory(id: &str, config: Value) -> Result<Box<dyn Source>> {
+    let config: KafkaSourceConfig = parse_config("kafka", config)?;
+    let topics: Vec<_> = config.topics.iter().map(String::as_str).collect();
+    Ok(Box::new(KafkaSource::new(
+        id,
+        &config.brokers,
+        &config.group_id,
+        topics,
+    )))
 }
 
 #[cfg(test)]

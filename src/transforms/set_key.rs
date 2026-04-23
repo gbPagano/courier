@@ -1,9 +1,12 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use serde::Deserialize;
 use serde_json::Value;
 
+use crate::config::parse_config;
 use crate::envelope::Envelope;
-use crate::transforms::MapOne;
+use crate::pipeline::ErrorPolicy;
+use crate::transforms::{BasicTransform, MapOne, Transform};
 
 /// Populates `meta.key` from a top-level field of the payload. String
 /// values are used as-is; other JSON types are stringified via `to_string`.
@@ -39,10 +42,32 @@ impl MapOne for SetKeyTransform {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct SetKeyTransformConfig {
+    from_field: String,
+}
+
+/// Registry factory for [`SetKeyTransform`]. Registered by
+/// `courier::registry::register_builtin` under kind `"set_key"`.
+pub fn set_key_transform_factory(
+    id: &str,
+    config: Value,
+    on_error: ErrorPolicy,
+) -> Result<Box<dyn Transform>> {
+    let config: SetKeyTransformConfig = parse_config("set_key", config)?;
+    Ok(Box::new(
+        BasicTransform::new(SetKeyTransform::new(id, config.from_field))
+            .with_error_policy(on_error),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    use crate::Registry;
+    use crate::config::{ErrorPolicyConfig, TransformSpec};
 
     #[tokio::test]
     async fn sets_key_from_string_field() {
@@ -66,5 +91,42 @@ mod tests {
         let env = Envelope::new("src", json!({ "other": 1 }));
         let out = t.map(env).await.unwrap().unwrap();
         assert!(out.meta.key.is_none());
+    }
+
+    #[test]
+    fn factory_resolves_through_registry() {
+        // Happy path for the factory wired into `with_builtins`.
+        let registry = Registry::with_builtins().unwrap();
+        registry
+            .build_transform(
+                "p/t0",
+                TransformSpec {
+                    kind: "set_key".into(),
+                    config: json!({ "from_field": "user_id" }),
+                    on_error: Some(ErrorPolicyConfig::Drop),
+                },
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn factory_reports_invalid_config() {
+        let registry = Registry::with_builtins().unwrap();
+        let err = registry
+            .build_transform(
+                "p/t0",
+                TransformSpec {
+                    kind: "set_key".into(),
+                    config: json!({ "wrong_field": "x" }),
+                    on_error: None,
+                },
+            )
+            .err()
+            .expect("expected invalid-config error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("invalid config for component type 'set_key'"),
+            "{msg}",
+        );
     }
 }

@@ -1,11 +1,14 @@
 use std::time::{Duration, Instant};
 
+use anyhow::Result;
 use async_trait::async_trait;
+use serde::Deserialize;
 use serde_json::Value;
 use tokio::sync::mpsc::Sender;
 use tokio::time::{MissedTickBehavior, interval};
 use tokio_util::sync::CancellationToken;
 
+use crate::config::parse_config;
 use crate::envelope::Envelope;
 use crate::sources::Source;
 
@@ -106,6 +109,23 @@ async fn fetch(url: &str) -> anyhow::Result<Value> {
         return Err(anyhow::anyhow!("HTTP error: {}", resp.status()));
     }
     Ok(resp.json::<Value>().await?)
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiPollSourceConfig {
+    url: String,
+    interval_secs: u64,
+}
+
+/// Registry factory for [`ApiPollSource`]. Registered by
+/// `courier::registry::register_builtin` under kind `"api_poll"`.
+pub fn api_poll_source_factory(id: &str, config: Value) -> Result<Box<dyn Source>> {
+    let config: ApiPollSourceConfig = parse_config("api_poll", config)?;
+    Ok(Box::new(ApiPollSource::new(
+        id,
+        config.url,
+        Duration::from_secs(config.interval_secs),
+    )))
 }
 
 #[cfg(test)]
