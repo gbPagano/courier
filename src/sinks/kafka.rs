@@ -63,3 +63,65 @@ impl WriteOne for KafkaSink {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rdkafka::Message;
+    use rdkafka::consumer::{Consumer, StreamConsumer};
+    use serde_json::json;
+    use testcontainers_modules::kafka::apache::{self, KAFKA_PORT};
+    use testcontainers_modules::testcontainers::runners::AsyncRunner;
+
+    use crate::sinks::WriteOne;
+
+    #[tokio::test]
+    async fn delivers_payload_and_key_with_source_id_fallback() -> anyhow::Result<()> {
+        let node = apache::Kafka::default().start().await?;
+        let host_port = node.get_host_port_ipv4(KAFKA_PORT).await?;
+        let brokers = format!("127.0.0.1:{host_port}");
+
+        let topic = "courier-sink-test";
+        let sink = KafkaSink::new("kafka-sink", &brokers, topic);
+
+        // Explicit meta.key -> used as record key.
+        let mut e1 = Envelope::new("src-1", json!({ "hello": "world" }));
+        e1.meta.key = Some("k-1".into());
+        sink.write(&e1).await?;
+
+        // No meta.key -> falls back to meta.source_id.
+        let e2 = Envelope::new("src-2", json!({ "n": 42 }));
+        assert!(e2.meta.key.is_none());
+        sink.write(&e2).await?;
+
+        let consumer: StreamConsumer = ClientConfig::new()
+            .set("bootstrap.servers", &brokers)
+            .set("group.id", "courier-sink-test-consumer")
+            .set("auto.offset.reset", "earliest")
+            .set("enable.auto.commit", "false")
+            .create()?;
+        consumer.subscribe(&[topic])?;
+
+        let mut received = Vec::new();
+        for _ in 0..2 {
+            let msg = tokio::time::timeout(Duration::from_secs(30), consumer.recv()).await??;
+            let key = msg.key().map(|k| String::from_utf8_lossy(k).into_owned());
+            let payload: serde_json::Value = serde_json::from_slice(msg.payload().unwrap())?;
+            received.push((key, payload));
+        }
+
+        assert!(
+            received
+                .iter()
+                .any(|(k, p)| k.as_deref() == Some("k-1") && p == &json!({ "hello": "world" })),
+            "missing explicit-key message in {received:?}",
+        );
+        assert!(
+            received
+                .iter()
+                .any(|(k, p)| k.as_deref() == Some("src-2") && p == &json!({ "n": 42 })),
+            "missing source-id-fallback message in {received:?}",
+        );
+        Ok(())
+    }
+}

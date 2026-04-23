@@ -23,3 +23,7 @@ proc-macro2 = "1.0.101"
 quote = "1.0.41"
 serde = { version = "1.0.228", features = ["derive"] }
 toml = "0.9.8"
+
+[dev-dependencies]
+testcontainers-modules = { version = "0.15.0", features = ["kafka"] }
+wiremock = "0.6.5"

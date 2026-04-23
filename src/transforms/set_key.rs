@@ -38,3 +38,33 @@ impl MapOne for SetKeyTransform {
         Ok(Some(env))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn sets_key_from_string_field() {
+        let t = SetKeyTransform::new("t", "user_id");
+        let env = Envelope::new("src", json!({ "user_id": "abc" }));
+        let out = t.map(env).await.unwrap().unwrap();
+        assert_eq!(out.meta.key.as_deref(), Some("abc"));
+    }
+
+    #[tokio::test]
+    async fn stringifies_non_string_field() {
+        let t = SetKeyTransform::new("t", "id");
+        let env = Envelope::new("src", json!({ "id": 42 }));
+        let out = t.map(env).await.unwrap().unwrap();
+        assert_eq!(out.meta.key.as_deref(), Some("42"));
+    }
+
+    #[tokio::test]
+    async fn leaves_key_unchanged_when_missing() {
+        let t = SetKeyTransform::new("t", "missing");
+        let env = Envelope::new("src", json!({ "other": 1 }));
+        let out = t.map(env).await.unwrap().unwrap();
+        assert!(out.meta.key.is_none());
+    }
+}

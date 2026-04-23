@@ -46,3 +46,19 @@ fn now_ms() -> u64 {
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn new_sets_source_id_and_defaults() {
+        let e = Envelope::new("src", json!({ "a": 1 }));
+        assert_eq!(e.meta.source_id, "src");
+        assert!(e.meta.key.is_none());
+        assert!(e.meta.headers.is_empty());
+        assert!(e.meta.timestamp_ms > 0);
+        assert_eq!(e.payload, json!({ "a": 1 }));
+    }
+}

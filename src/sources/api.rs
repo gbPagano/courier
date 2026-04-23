@@ -107,3 +107,101 @@ async fn fetch(url: &str) -> anyhow::Result<Value> {
     }
     Ok(resp.json::<Value>().await?)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use tokio::sync::mpsc;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn emits_envelope_per_poll() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/data"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "v": 1 })))
+            .mount(&server)
+            .await;
+
+        let url = format!("{}/data", server.uri());
+        let source = ApiPollSource::new("api", url, Duration::from_millis(20));
+        let (tx, mut rx) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+
+        let c = cancel.clone();
+        let handle = tokio::spawn(async move { Box::new(source).run(tx, c).await });
+
+        let env = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("poll timed out")
+            .expect("source closed before emitting");
+
+        assert_eq!(env.meta.source_id, "api");
+        assert_eq!(env.payload, json!({ "v": 1 }));
+
+        cancel.cancel();
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+    }
+
+    #[tokio::test]
+    async fn recovers_from_transient_http_error() {
+        let server = MockServer::start().await;
+        // First response is a 500; subsequent requests succeed.
+        Mock::given(method("GET"))
+            .and(path("/data"))
+            .respond_with(ResponseTemplate::new(500))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/data"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "ok": true })))
+            .mount(&server)
+            .await;
+
+        let url = format!("{}/data", server.uri());
+        let source = ApiPollSource::new("api", url, Duration::from_millis(20));
+        let (tx, mut rx) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+
+        let c = cancel.clone();
+        let handle = tokio::spawn(async move { Box::new(source).run(tx, c).await });
+
+        let env = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("poll timed out after retry")
+            .expect("source closed before emitting");
+        assert_eq!(env.payload, json!({ "ok": true }));
+
+        cancel.cancel();
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+    }
+
+    #[tokio::test]
+    async fn stops_when_cancelled() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/data"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .mount(&server)
+            .await;
+
+        let url = format!("{}/data", server.uri());
+        // Long interval: after the first tick the source sits in `wait_next`
+        // until either the interval elapses or cancel fires.
+        let source = ApiPollSource::new("api", url, Duration::from_secs(60));
+        let (tx, _rx) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+
+        let c = cancel.clone();
+        let handle = tokio::spawn(async move { Box::new(source).run(tx, c).await });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        cancel.cancel();
+
+        let res = tokio::time::timeout(Duration::from_secs(1), handle).await;
+        assert!(res.is_ok(), "source did not exit within 1s of cancel");
+    }
+}

@@ -5,6 +5,7 @@
 //! graceful drain on SIGINT/Ctrl+C.
 
 use futures::future;
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 pub mod envelope;
@@ -26,6 +27,17 @@ impl Courier {
         Self { pipelines }
     }
 
+    /// Spawn every pipeline as tokio tasks under the given cancel token.
+    /// Caller is responsible for awaiting the returned handles and firing
+    /// the token on shutdown. `run` wraps this with a SIGINT handler.
+    pub fn spawn(self, cancel: CancellationToken) -> Vec<JoinHandle<()>> {
+        let mut handles = Vec::new();
+        for p in self.pipelines {
+            handles.extend(spawn_pipeline(p, cancel.clone()));
+        }
+        handles
+    }
+
     pub async fn run(self) {
         let cancel = CancellationToken::new();
 
@@ -40,10 +52,7 @@ impl Courier {
             }
         });
 
-        let mut handles = Vec::new();
-        for p in self.pipelines {
-            handles.extend(spawn_pipeline(p, cancel.clone()));
-        }
+        let handles = self.spawn(cancel);
         future::join_all(handles).await;
     }
 }
