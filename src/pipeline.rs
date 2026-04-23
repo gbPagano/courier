@@ -13,7 +13,7 @@ use crate::transforms::Transform;
 /// - `FailPipeline`: cancel every task in this pipeline via the shared
 ///   `CancellationToken`. Use when a failure means continuing is pointless
 ///   (schema drift, unauthorized, etc).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Eq, PartialEq)]
 pub enum ErrorPolicy {
     #[default]
     Drop,

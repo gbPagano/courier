@@ -8,11 +8,15 @@ use futures::future;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+pub mod config;
 pub mod envelope;
 pub mod pipeline;
+pub mod registry;
 pub mod sinks;
 pub mod sources;
 pub mod transforms;
+
+pub use registry::{Registry, register_builtin};
 
 use pipeline::{Pipeline, spawn_pipeline};
 

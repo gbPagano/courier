@@ -4,9 +4,13 @@ use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use rdkafka::config::ClientConfig;
 use rdkafka::producer::{FutureProducer, FutureRecord};
+use serde::Deserialize;
+use serde_json::Value;
 
+use crate::config::parse_config;
 use crate::envelope::Envelope;
-use crate::sinks::WriteOne;
+use crate::pipeline::ErrorPolicy;
+use crate::sinks::{BasicSink, Sink, WriteOne};
 
 /// Kafka producer sink. Serializes the envelope payload as JSON and sends
 /// it to the configured topic. Uses `meta.key` as the record key when set,
@@ -62,6 +66,22 @@ impl WriteOne for KafkaSink {
             Err((e, _)) => Err(anyhow!("kafka delivery failed: {e:?}")),
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct KafkaSinkConfig {
+    brokers: String,
+    topic: String,
+}
+
+/// Registry factory for [`KafkaSink`]. Registered by
+/// `courier::registry::register_builtin` under kind `"kafka"`.
+pub fn kafka_sink_factory(id: &str, config: Value, on_error: ErrorPolicy) -> Result<Box<dyn Sink>> {
+    let config: KafkaSinkConfig = parse_config("kafka", config)?;
+    Ok(Box::new(
+        BasicSink::new(KafkaSink::new(id, &config.brokers, config.topic))
+            .with_error_policy(on_error),
+    ))
 }
 
 #[cfg(test)]

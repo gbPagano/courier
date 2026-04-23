@@ -5,130 +5,95 @@ use super::config::{
 };
 
 pub fn generate(config: &Config) -> proc_macro2::TokenStream {
-    let pipeline_builders: Vec<_> = config.pipelines.iter().map(gen_pipeline).collect();
+    let pipelines: Vec<_> = config.pipelines.iter().map(gen_pipeline).collect();
 
-    // Emit all imports inside the function body; #[allow(unused_imports)]
-    // on the function covers the case where a given config does not use
-    // every node type.
     quote! {
-        use courier::Courier;
-
-        #[allow(unused_imports)]
-        pub fn courier_from_config() -> Courier {
-            use std::time::Duration;
-
-            use courier::pipeline::{ErrorPolicy, Pipeline};
-            use courier::sinks::{BasicSink, Sink};
-            use courier::sinks::kafka::KafkaSink;
-            use courier::sources::Source;
-            use courier::sources::api::ApiPollSource;
-            use courier::sources::kafka::KafkaSource;
-            use courier::transforms::{BasicTransform, Transform};
-            use courier::transforms::set_key::SetKeyTransform;
-
-            let mut pipelines: Vec<Pipeline> = Vec::new();
-
-            #(#pipeline_builders)*
-
-            Courier::new(pipelines)
+        pub fn courier_config() -> courier::config::Config {
+            courier::config::Config {
+                pipelines: vec![#(#pipelines),*],
+            }
         }
     }
 }
 
-fn gen_pipeline(p: &PipelineConfig) -> proc_macro2::TokenStream {
-    let name = &p.name;
-    let source_expr = gen_source(&p.source, name);
+fn gen_pipeline(pipeline: &PipelineConfig) -> proc_macro2::TokenStream {
+    let name = &pipeline.name;
+    let source = gen_source(&pipeline.source);
+    let transforms: Vec<_> = pipeline.transforms.iter().map(gen_transform).collect();
+    let sinks: Vec<_> = pipeline.sinks.iter().map(gen_sink).collect();
 
-    let transforms: Vec<_> = p
-        .transforms
-        .iter()
-        .enumerate()
-        .map(|(i, t)| gen_transform(t, name, i))
-        .collect();
-
-    let sinks: Vec<_> = p
-        .sinks
-        .iter()
-        .enumerate()
-        .map(|(i, s)| gen_sink(s, name, i))
-        .collect();
-
-    let capacity_stmt = match p.channel_capacity {
-        Some(c) => quote! { let pipeline = pipeline.with_channel_capacity(#c); },
-        None => quote! {},
+    let channel_capacity = match pipeline.channel_capacity {
+        Some(capacity) => quote! { Some(#capacity) },
+        None => quote! { None },
     };
 
     quote! {
-        {
-            let pipeline = Pipeline::new(
-                #name,
-                Box::new(#source_expr) as Box<dyn Source>,
-            );
-            #capacity_stmt
-            let mut pipeline = pipeline;
-            #(
-                pipeline = pipeline.with_transform(Box::new(#transforms) as Box<dyn Transform>);
-            )*
-            #(
-                pipeline = pipeline.with_sink(Box::new(#sinks) as Box<dyn Sink>);
-            )*
-            pipelines.push(pipeline);
+        courier::config::PipelineSpec {
+            name: #name.into(),
+            source: #source,
+            transforms: vec![#(#transforms),*],
+            sinks: vec![#(#sinks),*],
+            channel_capacity: #channel_capacity,
         }
     }
 }
 
-fn gen_source(s: &SourceConfig, pipeline: &str) -> proc_macro2::TokenStream {
-    let id = format!("{pipeline}/src");
-    match s {
-        SourceConfig::ApiPoll { url, interval_secs } => quote! {
-            ApiPollSource::new(#id, #url, Duration::from_secs(#interval_secs))
-        },
-        SourceConfig::Kafka {
-            brokers,
-            group_id,
-            topics,
-        } => quote! {
-            KafkaSource::new(#id, #brokers, #group_id, vec![#(#topics),*])
-        },
-    }
-}
+fn gen_source(source: &SourceConfig) -> proc_macro2::TokenStream {
+    let kind = &source.kind;
+    let config = gen_json_value(&source.config);
 
-fn gen_transform(t: &TransformConfig, pipeline: &str, i: usize) -> proc_macro2::TokenStream {
-    let id = format!("{pipeline}/t{i}");
-    match t {
-        TransformConfig::SetKey {
-            from_field,
-            on_error,
-        } => {
-            let policy = gen_error_policy(on_error);
-            quote! {
-                BasicTransform::new(SetKeyTransform::new(#id, #from_field))
-                    .with_error_policy(#policy)
-            }
+    quote! {
+        courier::config::SourceSpec {
+            kind: #kind.into(),
+            config: #config,
         }
     }
 }
 
-fn gen_sink(s: &SinkConfig, pipeline: &str, i: usize) -> proc_macro2::TokenStream {
-    let id = format!("{pipeline}/sink{i}");
-    match s {
-        SinkConfig::Kafka {
-            brokers,
-            topic,
-            on_error,
-        } => {
-            let policy = gen_error_policy(on_error);
-            quote! {
-                BasicSink::new(KafkaSink::new(#id, #brokers, #topic))
-                    .with_error_policy(#policy)
-            }
+fn gen_transform(transform: &TransformConfig) -> proc_macro2::TokenStream {
+    let kind = &transform.kind;
+    let config = gen_json_value(&transform.config);
+    let on_error = gen_error_policy(&transform.on_error);
+
+    quote! {
+        courier::config::TransformSpec {
+            kind: #kind.into(),
+            config: #config,
+            on_error: #on_error,
         }
     }
 }
 
-fn gen_error_policy(e: &Option<ErrorPolicyConfig>) -> proc_macro2::TokenStream {
-    match e {
-        None | Some(ErrorPolicyConfig::Drop) => quote! { ErrorPolicy::Drop },
-        Some(ErrorPolicyConfig::FailPipeline) => quote! { ErrorPolicy::FailPipeline },
+fn gen_sink(sink: &SinkConfig) -> proc_macro2::TokenStream {
+    let kind = &sink.kind;
+    let config = gen_json_value(&sink.config);
+    let on_error = gen_error_policy(&sink.on_error);
+
+    quote! {
+        courier::config::SinkSpec {
+            kind: #kind.into(),
+            config: #config,
+            on_error: #on_error,
+        }
+    }
+}
+
+fn gen_error_policy(policy: &Option<ErrorPolicyConfig>) -> proc_macro2::TokenStream {
+    match policy {
+        Some(ErrorPolicyConfig::Drop) => {
+            quote! { Some(courier::config::ErrorPolicyConfig::Drop) }
+        }
+        Some(ErrorPolicyConfig::FailPipeline) => {
+            quote! { Some(courier::config::ErrorPolicyConfig::FailPipeline) }
+        }
+        None => quote! { None },
+    }
+}
+
+fn gen_json_value(value: &serde_json::Value) -> proc_macro2::TokenStream {
+    let encoded = serde_json::to_string(value).expect("config JSON should serialize");
+    quote! {
+        serde_json::from_str::<serde_json::Value>(#encoded)
+            .expect("generated config JSON should parse")
     }
 }
