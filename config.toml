@@ -1,57 +1,48 @@
-# Operation 1
-[[operations]]
+# Pipeline 1: kafka -> kafka
+[[pipelines]]
 name = "kafka->kafka"
-type = "Stream"
 
-[operations.reader]
+[pipelines.source]
 type = "kafka"
 brokers = "localhost:9092"
 group_id = "user-events-consumer"
 topics = ["topic1"]
-data_type = "Value"
 
-[operations.writer]
+[[pipelines.sinks]]
 type = "kafka"
 brokers = "localhost:9092"
 topic = "topic2"
-data_type = "Value"
 
-# Operation 2
-[[operations]]
-name = "apiitalo->kafka"
-type = "Interval"
+# Pipeline 2: api polling -> kafka
+[[pipelines]]
+name = "api->kafka"
+
+[pipelines.source]
+type = "api_poll"
+url = "https://jsonplaceholder.typicode.com/posts/1"
 interval_secs = 3
 
-[operations.reader]
-type = "api"
-url = "http://192.168.47.204:8000"
-data_type = "Value"
-
-[operations.writer]
+[[pipelines.sinks]]
 type = "kafka"
 brokers = "localhost:9092"
 topic = "topic1"
-data_type = "Value"
 
-# Operation 3
-[[operations]]
-name = "api->multi-kakfa"
-type = "IntervalFanout"
+# Pipeline 3: api polling -> two kafka topics (auto-broadcast)
+[[pipelines]]
+name = "api->multi-kafka"
+channel_capacity = 128
+
+[pipelines.source]
+type = "api_poll"
+url = "https://jsonplaceholder.typicode.com/posts/1"
 interval_secs = 5
 
-[operations.reader]
-type = "api"
-url = "http://192.168.47.204:8000"
-data_type = "Value"
-
-[[operations.writers]]
+[[pipelines.sinks]]
 type = "kafka"
 brokers = "localhost:9092"
 topic = "topic3"
-data_type = "Value"
 
-[[operations.writers]]
+[[pipelines.sinks]]
 type = "kafka"
 brokers = "localhost:9092"
 topic = "topic4"
-data_type = "Value"
