@@ -2,55 +2,60 @@ use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
-    pub operations: Vec<OperationConfig>,
+    pub pipelines: Vec<PipelineConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PipelineConfig {
+    pub name: String,
+    pub source: SourceConfig,
+    #[serde(default)]
+    pub transforms: Vec<TransformConfig>,
+    #[serde(default)]
+    pub sinks: Vec<SinkConfig>,
+    #[serde(default)]
+    pub channel_capacity: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
-pub enum OperationConfig {
-    #[serde(rename = "Interval")]
-    Interval {
-        name: String,
-        reader: ReaderConfig,
-        writer: WriterConfig,
-        interval_secs: u64,
-    },
-    #[serde(rename = "Stream")]
-    Stream {
-        name: String,
-        reader: ReaderConfig,
-        writer: WriterConfig,
-    },
-    #[serde(rename = "IntervalFanout")]
-    IntervalFanout {
-        name: String,
-        reader: ReaderConfig,
-        writers: Vec<WriterConfig>,
-        interval_secs: u64,
-    },
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type")]
-pub enum ReaderConfig {
+pub enum SourceConfig {
+    #[serde(rename = "api_poll")]
+    ApiPoll { url: String, interval_secs: u64 },
     #[serde(rename = "kafka")]
-    KafkaReader {
+    Kafka {
         brokers: String,
         group_id: String,
         topics: Vec<String>,
-        data_type: String,
     },
-    #[serde(rename = "api")]
-    ApiReader { url: String, data_type: String },
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
-pub enum WriterConfig {
+pub enum TransformConfig {
+    #[serde(rename = "set_key")]
+    SetKey {
+        from_field: String,
+        #[serde(default)]
+        on_error: Option<ErrorPolicyConfig>,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+pub enum SinkConfig {
     #[serde(rename = "kafka")]
-    KafkaWriter {
+    Kafka {
         brokers: String,
         topic: String,
-        data_type: String,
+        #[serde(default)]
+        on_error: Option<ErrorPolicyConfig>,
     },
+}
+
+#[derive(Debug, Deserialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorPolicyConfig {
+    Drop,
+    FailPipeline,
 }
