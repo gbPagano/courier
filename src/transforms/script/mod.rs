@@ -1,4 +1,6 @@
-use anyhow::Result;
+use std::path::PathBuf;
+
+use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
@@ -46,9 +48,12 @@ enum ScriptRuntime {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct ScriptTransformConfig {
+struct RawScriptTransformConfig {
     runtime: ScriptRuntime,
-    script: String,
+    #[serde(default)]
+    script: Option<String>,
+    #[serde(default)]
+    script_file: Option<PathBuf>,
     #[serde(default = "default_entrypoint")]
     entrypoint: String,
     #[serde(default = "default_max_operations")]
@@ -61,6 +66,44 @@ struct ScriptTransformConfig {
     max_function_expr_depth: usize,
     #[serde(default = "default_max_variables")]
     max_variables: usize,
+}
+
+#[derive(Debug, Clone)]
+struct ScriptTransformConfig {
+    runtime: ScriptRuntime,
+    script: String,
+    entrypoint: String,
+    max_operations: u64,
+    max_call_levels: usize,
+    max_expr_depth: usize,
+    max_function_expr_depth: usize,
+    max_variables: usize,
+}
+
+impl RawScriptTransformConfig {
+    fn resolve(self) -> Result<ScriptTransformConfig> {
+        let script = match (self.script, self.script_file) {
+            (Some(_), Some(_)) => {
+                bail!("script transform: set either 'script' or 'script_file', not both")
+            }
+            (None, None) => {
+                bail!("script transform: one of 'script' or 'script_file' is required")
+            }
+            (Some(script), None) => script,
+            (None, Some(path)) => std::fs::read_to_string(&path)
+                .with_context(|| format!("failed to read script_file '{}'", path.display()))?,
+        };
+        Ok(ScriptTransformConfig {
+            runtime: self.runtime,
+            script,
+            entrypoint: self.entrypoint,
+            max_operations: self.max_operations,
+            max_call_levels: self.max_call_levels,
+            max_expr_depth: self.max_expr_depth,
+            max_function_expr_depth: self.max_function_expr_depth,
+            max_variables: self.max_variables,
+        })
+    }
 }
 
 fn default_entrypoint() -> String {
@@ -94,7 +137,8 @@ pub fn script_transform_factory(
     config: Value,
     on_error: ErrorPolicy,
 ) -> Result<Box<dyn Transform>> {
-    let config: ScriptTransformConfig = parse_config("script", config)?;
+    let config: RawScriptTransformConfig = parse_config("script", config)?;
+    let config = config.resolve()?;
 
     let transform: Box<dyn Transform> = match config.runtime {
         ScriptRuntime::Rhai => Box::new(
@@ -129,6 +173,95 @@ mod tests {
                 },
             )
             .unwrap();
+    }
+
+    #[test]
+    fn factory_loads_script_from_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("transform.rhai");
+        std::fs::write(&path, "fn transform(env) { env }").unwrap();
+
+        let registry = Registry::with_builtins().unwrap();
+        registry
+            .build_transform(
+                "p/t0",
+                TransformSpec {
+                    kind: "script".into(),
+                    config: json!({
+                        "runtime": "rhai",
+                        "script_file": path,
+                    }),
+                    on_error: None,
+                },
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn factory_rejects_missing_script_source() {
+        let registry = Registry::with_builtins().unwrap();
+        let err = registry
+            .build_transform(
+                "p/t0",
+                TransformSpec {
+                    kind: "script".into(),
+                    config: json!({ "runtime": "rhai" }),
+                    on_error: None,
+                },
+            )
+            .err()
+            .expect("expected factory error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("one of 'script' or 'script_file' is required"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn factory_rejects_both_script_and_script_file() {
+        let registry = Registry::with_builtins().unwrap();
+        let err = registry
+            .build_transform(
+                "p/t0",
+                TransformSpec {
+                    kind: "script".into(),
+                    config: json!({
+                        "runtime": "rhai",
+                        "script": "fn transform(env) { env }",
+                        "script_file": "/tmp/does-not-matter.rhai",
+                    }),
+                    on_error: None,
+                },
+            )
+            .err()
+            .expect("expected factory error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("set either 'script' or 'script_file', not both"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn factory_reports_missing_script_file() {
+        let registry = Registry::with_builtins().unwrap();
+        let err = registry
+            .build_transform(
+                "p/t0",
+                TransformSpec {
+                    kind: "script".into(),
+                    config: json!({
+                        "runtime": "rhai",
+                        "script_file": "/nonexistent/script.rhai",
+                    }),
+                    on_error: None,
+                },
+            )
+            .err()
+            .expect("expected factory error");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("/nonexistent/script.rhai"), "{msg}");
     }
 
     #[test]

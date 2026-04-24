@@ -13,7 +13,7 @@ cargo test                           # Run all tests
 cargo test <test_name>               # Run a single test
 ```
 
-Pipeline definitions are loaded at runtime from `config.toml` (override with the `COURIER_CONFIG` env var). Edits take effect on binary restart — no rebuild required.
+Pipeline definitions are loaded at runtime from `config.toml` (override with the `COURIER_CONFIG` env var). `COURIER_CONFIG` may point at a single `.toml`/`.json` file or at a directory — in directory mode every `.toml`/`.json` file is parsed in sorted order and their `pipelines` concatenated. Edits take effect on binary restart — no rebuild required.
 
 ## Architecture
 
@@ -56,7 +56,7 @@ Plugin model:
 ### Built-in nodes
 
 - Sources: `api_poll` (`ApiPollSource`), `kafka` (`KafkaSource`)
-- Transforms: `set_key` (`SetKeyTransform`, sets `meta.key` from a payload field)
+- Transforms: `set_key` (`SetKeyTransform`, sets `meta.key` from a payload field), `script` (Rhai runtime; set `script` inline or `script_file` to load from disk, not both)
 - Sinks: `kafka` (`KafkaSink`, exposed through `ManagedSink`)
 
 ### Runtime
@@ -65,6 +65,6 @@ Plugin model:
 
 ### Runtime config loading
 
-`Config::load(path)` / `Config::from_toml_str(s)` (in `src/config.rs`) parse TOML into the runtime `Config` tree. Arbitrary per-component fields (anything other than `type`, `on_error`, `retry`) are captured into the component's `config: serde_json::Value` bucket via a private `Raw*` layer, so factories can deserialize their own typed config through `parse_config`. TOML datetimes are stringified (no native JSON equivalent).
+`Config::load(path)` accepts either a single file (parser picked by `.toml`/`.json` extension) or a directory (every `.toml`/`.json` file merged in sorted order, duplicate pipeline names rejected). `Config::from_toml_str` and `Config::from_json_str` are the in-memory entry points. Both go through the same private `Raw*` layer that flattens arbitrary per-component fields (anything other than `type`, `on_error`, `retry`) into the component's `config: serde_json::Value` bucket; factories deserialize their own typed config through `parse_config`. TOML datetimes are stringified on the way through (no native JSON equivalent).
 
 `src/main.rs` reads `COURIER_CONFIG` (default `config.toml`), calls `Config::load`, builds a `Registry::with_builtins()`, and hands the config to `registry.build_courier(...)`. Bad config fails at startup with path-annotated `anyhow` errors rather than blocking compilation.
