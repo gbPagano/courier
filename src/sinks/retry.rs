@@ -54,31 +54,28 @@ async fn on_exhausted(
             let mut line = serde_json::to_string(&entry)?;
             line.push('\n');
 
-            match tokio::fs::OpenOptions::new()
-                .append(true)
-                .create(true)
-                .open(path)
-                .await
-            {
-                Ok(mut file) => match file.write_all(line.as_bytes()).await {
-                    Ok(()) => {
-                        log::warn!(
-                            "[{id}] all retries exhausted — envelope dead-lettered to {}",
-                            path.display(),
-                        );
-                        Ok(())
-                    }
-                    Err(io_err) => {
-                        log::error!(
-                            "[{id}] failed to write dead-letter entry to {}: {io_err}",
-                            path.display(),
-                        );
-                        Err(err)
-                    }
-                },
+            let io_result = async {
+                let mut file = tokio::fs::OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open(path)
+                    .await?;
+                file.write_all(line.as_bytes()).await?;
+                file.flush().await
+            }
+            .await;
+
+            match io_result {
+                Ok(()) => {
+                    log::warn!(
+                        "[{id}] all retries exhausted — envelope dead-lettered to {}",
+                        path.display(),
+                    );
+                    Ok(())
+                }
                 Err(io_err) => {
                     log::error!(
-                        "[{id}] failed to open dead-letter file {}: {io_err}",
+                        "[{id}] failed to persist dead-letter entry to {}: {io_err}",
                         path.display(),
                     );
                     Err(err)
