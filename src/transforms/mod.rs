@@ -6,6 +6,7 @@ use tokio_util::sync::CancellationToken;
 use crate::envelope::Envelope;
 use crate::pipeline::ErrorPolicy;
 
+pub mod script;
 pub mod set_key;
 
 /// Full-control transform: owns both channels.

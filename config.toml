@@ -46,3 +46,37 @@ topic = "topic3"
 type = "kafka"
 brokers = "localhost:9092"
 topic = "topic4"
+
+# Pipeline 4: api polling -> scripted transform -> kafka
+[[pipelines]]
+name = "api->script->kafka"
+
+[pipelines.source]
+type = "api_poll"
+url = "https://jsonplaceholder.typicode.com/posts/1"
+interval_secs = 3
+
+[[pipelines.transforms]]
+type = "script"
+runtime = "rhai"
+entrypoint = "transform"
+max_operations = 100000
+script = """
+fn transform(env) {
+  if env.payload["userId"] == 1 {
+    env.meta.headers["priority"] = "high";
+  }
+
+  if env.payload["id"] == 0 {
+    return ();
+  }
+
+  env.payload["processed"] = true;
+  env
+}
+"""
+
+[[pipelines.sinks]]
+type = "kafka"
+brokers = "localhost:9092"
+topic = "topic5"

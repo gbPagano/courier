@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::time::SystemTime;
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// The single wire type flowing between all pipeline nodes.
@@ -8,7 +9,7 @@ use serde_json::Value;
 /// Generics stop at the node boundary: every `Source`, `Transform`, and `Sink`
 /// works on `Envelope` regardless of the underlying schema. Strongly-typed
 /// payloads are opt-in via transforms that deserialize, map, and re-serialize.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Envelope {
     pub meta: Meta,
     pub payload: Value,
@@ -19,7 +20,7 @@ pub struct Envelope {
 /// `key` is populated by the source when available (e.g., Kafka record key)
 /// or by a transform like `SetKeyTransform`. Sinks that require a key (like
 /// `KafkaSink`) fall back to `source_id` when `key` is `None`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Meta {
     pub key: Option<String>,
     pub source_id: String,

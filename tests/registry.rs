@@ -16,6 +16,7 @@ use courier::config::{
 };
 use courier::envelope::Envelope;
 use courier::pipeline::ErrorPolicy;
+use courier::register_builtin;
 use courier::retry::RetryPolicy;
 use courier::sinks::{ManagedSink, Sink};
 use courier::sources::Source;
@@ -147,6 +148,60 @@ async fn end_to_end_pipeline_built_through_registry() {
     assert_eq!(items[0].meta.source_id, "p/src");
     assert_eq!(items[0].meta.key.as_deref(), Some("a"));
     assert_eq!(items[1].meta.key.as_deref(), Some("b"));
+}
+
+#[tokio::test]
+async fn built_in_script_transform_runs_through_registry() {
+    let capture = SinkRegistry::default();
+
+    let mut registry = Registry::default();
+    register_builtin(&mut registry).unwrap();
+    registry.register_source("vec", vec_source_factory).unwrap();
+    registry
+        .register_sink("capture", capture.factory())
+        .unwrap();
+
+    let courier = registry
+        .build_courier(Config {
+            pipelines: vec![PipelineSpec {
+                name: "scripted".into(),
+                source: SourceSpec {
+                    kind: "vec".into(),
+                    config: json!({
+                        "items": [{ "value": 1 }],
+                    }),
+                },
+                transforms: vec![TransformSpec {
+                    kind: "script".into(),
+                    config: json!({
+                        "runtime": "rhai",
+                        "script": r#"
+                            fn transform(env) {
+                                env.payload["processed"] = true;
+                                env
+                            }
+                        "#,
+                    }),
+                    on_error: Some(ErrorPolicyConfig::Drop),
+                }],
+                sinks: vec![SinkSpec {
+                    kind: "capture".into(),
+                    config: json!({}),
+                    on_error: None,
+                    retry: None,
+                }],
+                channel_capacity: None,
+            }],
+        })
+        .unwrap();
+
+    let handles = courier.spawn(CancellationToken::new());
+    join_all(handles).await;
+
+    let collected = capture.get("scripted/sink0");
+    let items = collected.lock().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].payload, json!({ "value": 1, "processed": true }));
 }
 
 #[tokio::test]

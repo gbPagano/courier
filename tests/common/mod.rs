@@ -64,6 +64,14 @@ impl CollectingSink {
         }
     }
 
+    #[allow(dead_code)]
+    pub fn from_store(id: impl Into<String>, store: Arc<Mutex<Vec<Envelope>>>) -> Self {
+        Self {
+            id: id.into(),
+            store,
+        }
+    }
+
     pub fn handle(&self) -> Arc<Mutex<Vec<Envelope>>> {
         Arc::clone(&self.store)
     }

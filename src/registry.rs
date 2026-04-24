@@ -246,6 +246,10 @@ pub fn register_builtin(registry: &mut Registry) -> Result<()> {
     registry.register_source("api_poll", crate::sources::api::api_poll_source_factory)?;
     registry.register_source("kafka", crate::sources::kafka::kafka_source_factory)?;
     registry.register_transform(
+        "script",
+        crate::transforms::script::script_transform_factory,
+    )?;
+    registry.register_transform(
         "set_key",
         crate::transforms::set_key::set_key_transform_factory,
     )?;
@@ -474,8 +478,9 @@ mod tests {
         sources.sort();
         assert_eq!(sources, vec!["api_poll", "kafka"]);
 
-        let transforms: Vec<_> = registry.transform_kinds().collect();
-        assert_eq!(transforms, vec!["set_key"]);
+        let mut transforms: Vec<_> = registry.transform_kinds().collect();
+        transforms.sort();
+        assert_eq!(transforms, vec!["script", "set_key"]);
 
         let sinks: Vec<_> = registry.sink_kinds().collect();
         assert_eq!(sinks, vec!["kafka"]);

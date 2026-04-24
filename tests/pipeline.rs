@@ -15,10 +15,15 @@ use tokio_util::sync::CancellationToken;
 use courier::Courier;
 use courier::envelope::Envelope;
 use courier::pipeline::Pipeline;
+use courier::register_builtin;
 use courier::sinks::{ManagedSink, WriteOne};
 use courier::sources::Source;
 use courier::transforms::set_key::SetKeyTransform;
 use courier::transforms::{BasicTransform, MapOne};
+use courier::{
+    Registry,
+    config::{Config, ErrorPolicyConfig, PipelineSpec, SinkSpec, SourceSpec, TransformSpec},
+};
 
 mod common;
 use common::{CollectingSink, VecSource};
@@ -216,4 +221,268 @@ async fn backpressure_blocks_source_on_full_channel() {
 
     cancel.cancel();
     let _ = tokio::time::timeout(Duration::from_secs(1), join_all(handles)).await;
+}
+
+#[tokio::test]
+async fn script_transform_end_to_end() {
+    let mut registry = Registry::default();
+    register_builtin(&mut registry).unwrap();
+
+    let capture = CollectingSink::new("dst");
+    let store = capture.handle();
+    registry
+        .register_source("vec", |id: &str, _| {
+            Ok(Box::new(VecSource::new(
+                id,
+                vec![Envelope::new(id, json!({ "value": 1 }))],
+            )) as Box<dyn Source>)
+        })
+        .unwrap();
+    registry
+        .register_sink("capture", move |id: &str, _, _, _| {
+            Ok(Box::new(ManagedSink::new(CollectingSink::from_store(
+                id,
+                store.clone(),
+            ))) as Box<dyn courier::sinks::Sink>)
+        })
+        .unwrap();
+
+    let courier = registry
+        .build_courier(Config {
+            pipelines: vec![PipelineSpec {
+                name: "scripted".into(),
+                source: SourceSpec {
+                    kind: "vec".into(),
+                    config: json!({}),
+                },
+                transforms: vec![TransformSpec {
+                    kind: "script".into(),
+                    config: json!({
+                        "runtime": "rhai",
+                        "script": r#"
+                            fn transform(env) {
+                                env.payload["processed"] = true;
+                                env
+                            }
+                        "#,
+                    }),
+                    on_error: Some(ErrorPolicyConfig::Drop),
+                }],
+                sinks: vec![SinkSpec {
+                    kind: "capture".into(),
+                    config: json!({}),
+                    on_error: None,
+                    retry: None,
+                }],
+                channel_capacity: None,
+            }],
+        })
+        .unwrap();
+
+    let handles = courier.spawn(CancellationToken::new());
+    join_all(handles).await;
+
+    let collected = capture.handle();
+    let items = collected.lock().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].payload, json!({ "value": 1, "processed": true }));
+}
+
+#[tokio::test]
+async fn script_transform_filters_with_unit() {
+    let mut registry = Registry::default();
+    register_builtin(&mut registry).unwrap();
+
+    let capture = CollectingSink::new("dst");
+    let store = capture.handle();
+    registry
+        .register_source("vec", |id: &str, _| {
+            Ok(Box::new(VecSource::new(
+                id,
+                vec![Envelope::new(id, json!({ "skip": true }))],
+            )) as Box<dyn Source>)
+        })
+        .unwrap();
+    registry
+        .register_sink("capture", move |id: &str, _, _, _| {
+            Ok(Box::new(ManagedSink::new(CollectingSink::from_store(
+                id,
+                store.clone(),
+            ))) as Box<dyn courier::sinks::Sink>)
+        })
+        .unwrap();
+
+    let courier = registry
+        .build_courier(Config {
+            pipelines: vec![PipelineSpec {
+                name: "filtered".into(),
+                source: SourceSpec {
+                    kind: "vec".into(),
+                    config: json!({}),
+                },
+                transforms: vec![TransformSpec {
+                    kind: "script".into(),
+                    config: json!({
+                        "runtime": "rhai",
+                        "script": "fn transform(env) { () }",
+                    }),
+                    on_error: Some(ErrorPolicyConfig::Drop),
+                }],
+                sinks: vec![SinkSpec {
+                    kind: "capture".into(),
+                    config: json!({}),
+                    on_error: None,
+                    retry: None,
+                }],
+                channel_capacity: None,
+            }],
+        })
+        .unwrap();
+
+    let handles = courier.spawn(CancellationToken::new());
+    join_all(handles).await;
+
+    assert!(capture.handle().lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn script_transform_drop_policy_continues_after_error() {
+    let mut registry = Registry::default();
+    register_builtin(&mut registry).unwrap();
+
+    let capture = CollectingSink::new("dst");
+    let store = capture.handle();
+    registry
+        .register_source("vec", |id: &str, _| {
+            Ok(Box::new(VecSource::new(
+                id,
+                vec![
+                    Envelope::new(id, json!({ "fail": true, "value": 1 })),
+                    Envelope::new(id, json!({ "fail": false, "value": 2 })),
+                ],
+            )) as Box<dyn Source>)
+        })
+        .unwrap();
+    registry
+        .register_sink("capture", move |id: &str, _, _, _| {
+            Ok(Box::new(ManagedSink::new(CollectingSink::from_store(
+                id,
+                store.clone(),
+            ))) as Box<dyn courier::sinks::Sink>)
+        })
+        .unwrap();
+
+    let courier = registry
+        .build_courier(Config {
+            pipelines: vec![PipelineSpec {
+                name: "drop-errors".into(),
+                source: SourceSpec {
+                    kind: "vec".into(),
+                    config: json!({}),
+                },
+                transforms: vec![TransformSpec {
+                    kind: "script".into(),
+                    config: json!({
+                        "runtime": "rhai",
+                        "script": r#"
+                            fn transform(env) {
+                                if env.payload["fail"] == true {
+                                    throw "boom";
+                                }
+                                env.payload["processed"] = true;
+                                env
+                            }
+                        "#,
+                    }),
+                    on_error: Some(ErrorPolicyConfig::Drop),
+                }],
+                sinks: vec![SinkSpec {
+                    kind: "capture".into(),
+                    config: json!({}),
+                    on_error: None,
+                    retry: None,
+                }],
+                channel_capacity: None,
+            }],
+        })
+        .unwrap();
+
+    let handles = courier.spawn(CancellationToken::new());
+    join_all(handles).await;
+
+    let items = capture.handle();
+    let items = items.lock().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(
+        items[0].payload,
+        json!({ "fail": false, "value": 2, "processed": true })
+    );
+}
+
+#[tokio::test]
+async fn script_transform_fail_pipeline_stops_after_error() {
+    let mut registry = Registry::default();
+    register_builtin(&mut registry).unwrap();
+
+    let capture = CollectingSink::new("dst");
+    let store = capture.handle();
+    registry
+        .register_source("vec", |id: &str, _| {
+            Ok(Box::new(VecSource::new(
+                id,
+                vec![
+                    Envelope::new(id, json!({ "fail": true, "value": 1 })),
+                    Envelope::new(id, json!({ "fail": false, "value": 2 })),
+                ],
+            )) as Box<dyn Source>)
+        })
+        .unwrap();
+    registry
+        .register_sink("capture", move |id: &str, _, _, _| {
+            Ok(Box::new(ManagedSink::new(CollectingSink::from_store(
+                id,
+                store.clone(),
+            ))) as Box<dyn courier::sinks::Sink>)
+        })
+        .unwrap();
+
+    let courier = registry
+        .build_courier(Config {
+            pipelines: vec![PipelineSpec {
+                name: "fail-pipeline".into(),
+                source: SourceSpec {
+                    kind: "vec".into(),
+                    config: json!({}),
+                },
+                transforms: vec![TransformSpec {
+                    kind: "script".into(),
+                    config: json!({
+                        "runtime": "rhai",
+                        "script": r#"
+                            fn transform(env) {
+                                if env.payload["fail"] == true {
+                                    throw "boom";
+                                }
+                                env.payload["processed"] = true;
+                                env
+                            }
+                        "#,
+                    }),
+                    on_error: Some(ErrorPolicyConfig::FailPipeline),
+                }],
+                sinks: vec![SinkSpec {
+                    kind: "capture".into(),
+                    config: json!({}),
+                    on_error: None,
+                    retry: None,
+                }],
+                channel_capacity: None,
+            }],
+        })
+        .unwrap();
+
+    let handles = courier.spawn(CancellationToken::new());
+    join_all(handles).await;
+
+    assert!(capture.handle().lock().unwrap().is_empty());
 }
