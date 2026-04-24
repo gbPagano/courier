@@ -13,7 +13,7 @@ cargo test                           # Run all tests
 cargo test <test_name>               # Run a single test
 ```
 
-The build script parses `config.toml` and emits `generated.rs` (a `courier_config()` fn returning a `Config`). Changes to `config.toml` or `build/` take effect on the next `cargo build`.
+Pipeline definitions are loaded at runtime from `config.toml` (override with the `COURIER_CONFIG` env var). Edits take effect on binary restart — no rebuild required.
 
 ## Architecture
 
@@ -63,6 +63,8 @@ Plugin model:
 
 `spawn_pipeline` (in `src/pipeline.rs`) wires source → transforms → sinks with mpsc channels. When `sinks.len() > 1`, an implicit **broadcast splitter** is inserted that clones each envelope to every sink. Since the splitter is synchronous per sink, a slow sink applies backpressure to the whole pipeline — by design.
 
-### Build-time config → runtime construction
+### Runtime config loading
 
-`build/build.rs` reads `config.toml`, parses it via `build/config.rs`, and emits `generated.rs` through `build/codegen.rs`. The generated `courier_config()` function returns a `courier::config::Config` value (not a `Courier`). `src/main.rs` includes `generated.rs`, builds a `Registry::with_builtins()`, and calls `registry.build_courier(courier_config())` to get a `Courier`. This split means the config shape is frozen at compile time, but component resolution (and any third-party plugin registration) happens at runtime.
+`Config::load(path)` / `Config::from_toml_str(s)` (in `src/config.rs`) parse TOML into the runtime `Config` tree. Arbitrary per-component fields (anything other than `type`, `on_error`, `retry`) are captured into the component's `config: serde_json::Value` bucket via a private `Raw*` layer, so factories can deserialize their own typed config through `parse_config`. TOML datetimes are stringified (no native JSON equivalent).
+
+`src/main.rs` reads `COURIER_CONFIG` (default `config.toml`), calls `Config::load`, builds a `Registry::with_builtins()`, and hands the config to `registry.build_courier(...)`. Bad config fails at startup with path-annotated `anyhow` errors rather than blocking compilation.

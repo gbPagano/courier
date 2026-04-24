@@ -33,11 +33,7 @@ Core runtime pieces:
 
 ## Configuration
 
-Courier currently uses build-time code generation:
-
-- `config.toml` defines pipelines
-- `build/` parses config and generates `generated.rs`
-- `src/main.rs` starts the generated `Courier`
+Pipelines are loaded at runtime from a TOML file. By default Courier reads `config.toml` from the working directory; override the path with the `COURIER_CONFIG` environment variable. Restart the binary to pick up edits — no recompile required.
 
 Example:
 
