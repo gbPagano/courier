@@ -84,6 +84,7 @@ mod tests {
             runtime: ScriptRuntime::Lua,
             script: script.into(),
             entrypoint: "transform".into(),
+            python: None,
             rhai: None,
         }
     }

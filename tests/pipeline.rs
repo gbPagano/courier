@@ -610,6 +610,201 @@ async fn lua_script_transform_filters_with_nil() {
 }
 
 #[tokio::test]
+async fn python_script_transform_end_to_end() {
+    let mut registry = Registry::default();
+    register_builtin(&mut registry).unwrap();
+
+    let capture = CollectingSink::new("dst");
+    let store = capture.handle();
+    registry
+        .register_source("vec", |id: &str, _| {
+            Ok(Box::new(VecSource::new(
+                id,
+                vec![Envelope::new(id, json!({ "value": 1 }))],
+            )) as Box<dyn Source>)
+        })
+        .unwrap();
+    registry
+        .register_sink("capture", move |id: &str, _, _, _| {
+            Ok(Box::new(ManagedSink::new(CollectingSink::from_store(
+                id,
+                store.clone(),
+            ))) as Box<dyn courier::sinks::Sink>)
+        })
+        .unwrap();
+
+    let courier = registry
+        .build_courier(Config {
+            pipelines: vec![PipelineSpec {
+                name: "python-scripted".into(),
+                source: SourceSpec {
+                    kind: "vec".into(),
+                    config: json!({}),
+                },
+                transforms: vec![TransformSpec {
+                    kind: "script".into(),
+                    config: json!({
+                        "runtime": "python",
+                        "script": "def transform(env):\n    env['payload']['processed'] = True\n    return env\n",
+                    }),
+                    on_error: Some(ErrorPolicyConfig::Drop),
+                }],
+                sinks: vec![SinkSpec {
+                    kind: "capture".into(),
+                    config: json!({}),
+                    on_error: None,
+                    retry: None,
+                }],
+                channel_capacity: None,
+            }],
+        })
+        .unwrap();
+
+    let handles = courier.spawn(CancellationToken::new());
+    join_all(handles).await;
+
+    let collected = capture.handle();
+    let items = collected.lock().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].payload, json!({ "value": 1, "processed": true }));
+}
+
+#[tokio::test]
+async fn python_script_transform_filters_with_none() {
+    let mut registry = Registry::default();
+    register_builtin(&mut registry).unwrap();
+
+    let capture = CollectingSink::new("dst");
+    let store = capture.handle();
+    registry
+        .register_source("vec", |id: &str, _| {
+            Ok(Box::new(VecSource::new(
+                id,
+                vec![Envelope::new(id, json!({ "skip": true }))],
+            )) as Box<dyn Source>)
+        })
+        .unwrap();
+    registry
+        .register_sink("capture", move |id: &str, _, _, _| {
+            Ok(Box::new(ManagedSink::new(CollectingSink::from_store(
+                id,
+                store.clone(),
+            ))) as Box<dyn courier::sinks::Sink>)
+        })
+        .unwrap();
+
+    let courier = registry
+        .build_courier(Config {
+            pipelines: vec![PipelineSpec {
+                name: "python-filtered".into(),
+                source: SourceSpec {
+                    kind: "vec".into(),
+                    config: json!({}),
+                },
+                transforms: vec![TransformSpec {
+                    kind: "script".into(),
+                    config: json!({
+                        "runtime": "python",
+                        "script": "def transform(env):\n    return None\n",
+                    }),
+                    on_error: Some(ErrorPolicyConfig::Drop),
+                }],
+                sinks: vec![SinkSpec {
+                    kind: "capture".into(),
+                    config: json!({}),
+                    on_error: None,
+                    retry: None,
+                }],
+                channel_capacity: None,
+            }],
+        })
+        .unwrap();
+
+    let handles = courier.spawn(CancellationToken::new());
+    join_all(handles).await;
+
+    assert!(capture.handle().lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn script_transform_chains_rhai_then_python() {
+    let mut registry = Registry::default();
+    register_builtin(&mut registry).unwrap();
+
+    let capture = CollectingSink::new("dst");
+    let store = capture.handle();
+    registry
+        .register_source("vec", |id: &str, _| {
+            Ok(Box::new(VecSource::new(
+                id,
+                vec![Envelope::new(id, json!({ "value": 1 }))],
+            )) as Box<dyn Source>)
+        })
+        .unwrap();
+    registry
+        .register_sink("capture", move |id: &str, _, _, _| {
+            Ok(Box::new(ManagedSink::new(CollectingSink::from_store(
+                id,
+                store.clone(),
+            ))) as Box<dyn courier::sinks::Sink>)
+        })
+        .unwrap();
+
+    let courier = registry
+        .build_courier(Config {
+            pipelines: vec![PipelineSpec {
+                name: "rhai-then-python".into(),
+                source: SourceSpec {
+                    kind: "vec".into(),
+                    config: json!({}),
+                },
+                transforms: vec![
+                    TransformSpec {
+                        kind: "script".into(),
+                        config: json!({
+                            "runtime": "rhai",
+                            "script": r#"
+                                fn transform(env) {
+                                    env.payload["rhai"] = true;
+                                    env
+                                }
+                            "#,
+                        }),
+                        on_error: Some(ErrorPolicyConfig::Drop),
+                    },
+                    TransformSpec {
+                        kind: "script".into(),
+                        config: json!({
+                            "runtime": "python",
+                            "script": "def transform(env):\n    env['payload']['python'] = True\n    env['payload']['value'] = env['payload']['value'] + 1\n    return env\n",
+                        }),
+                        on_error: Some(ErrorPolicyConfig::Drop),
+                    },
+                ],
+                sinks: vec![SinkSpec {
+                    kind: "capture".into(),
+                    config: json!({}),
+                    on_error: None,
+                    retry: None,
+                }],
+                channel_capacity: None,
+            }],
+        })
+        .unwrap();
+
+    let handles = courier.spawn(CancellationToken::new());
+    join_all(handles).await;
+
+    let collected = capture.handle();
+    let items = collected.lock().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(
+        items[0].payload,
+        json!({ "value": 2, "rhai": true, "python": true })
+    );
+}
+
+#[tokio::test]
 async fn script_transform_chains_rhai_then_lua() {
     let mut registry = Registry::default();
     register_builtin(&mut registry).unwrap();
@@ -691,6 +886,132 @@ async fn script_transform_chains_rhai_then_lua() {
         items[0].payload,
         json!({ "value": 2, "rhai": true, "lua": true })
     );
+}
+
+#[tokio::test]
+async fn python_script_transform_drop_policy_continues_after_error() {
+    let mut registry = Registry::default();
+    register_builtin(&mut registry).unwrap();
+
+    let capture = CollectingSink::new("dst");
+    let store = capture.handle();
+    registry
+        .register_source("vec", |id: &str, _| {
+            Ok(Box::new(VecSource::new(
+                id,
+                vec![
+                    Envelope::new(id, json!({ "fail": true, "value": 1 })),
+                    Envelope::new(id, json!({ "fail": false, "value": 2 })),
+                ],
+            )) as Box<dyn Source>)
+        })
+        .unwrap();
+    registry
+        .register_sink("capture", move |id: &str, _, _, _| {
+            Ok(Box::new(ManagedSink::new(CollectingSink::from_store(
+                id,
+                store.clone(),
+            ))) as Box<dyn courier::sinks::Sink>)
+        })
+        .unwrap();
+
+    let courier = registry
+        .build_courier(Config {
+            pipelines: vec![PipelineSpec {
+                name: "python-drop-errors".into(),
+                source: SourceSpec {
+                    kind: "vec".into(),
+                    config: json!({}),
+                },
+                transforms: vec![TransformSpec {
+                    kind: "script".into(),
+                    config: json!({
+                        "runtime": "python",
+                        "script": "def transform(env):\n    if env['payload']['fail']:\n        raise RuntimeError('boom')\n    env['payload']['processed'] = True\n    return env\n",
+                    }),
+                    on_error: Some(ErrorPolicyConfig::Drop),
+                }],
+                sinks: vec![SinkSpec {
+                    kind: "capture".into(),
+                    config: json!({}),
+                    on_error: None,
+                    retry: None,
+                }],
+                channel_capacity: None,
+            }],
+        })
+        .unwrap();
+
+    let handles = courier.spawn(CancellationToken::new());
+    join_all(handles).await;
+
+    let items = capture.handle();
+    let items = items.lock().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(
+        items[0].payload,
+        json!({ "fail": false, "value": 2, "processed": true })
+    );
+}
+
+#[tokio::test]
+async fn python_script_transform_fail_pipeline_stops_after_error() {
+    let mut registry = Registry::default();
+    register_builtin(&mut registry).unwrap();
+
+    let capture = CollectingSink::new("dst");
+    let store = capture.handle();
+    registry
+        .register_source("vec", |id: &str, _| {
+            Ok(Box::new(VecSource::new(
+                id,
+                vec![
+                    Envelope::new(id, json!({ "fail": true, "value": 1 })),
+                    Envelope::new(id, json!({ "fail": false, "value": 2 })),
+                ],
+            )) as Box<dyn Source>)
+        })
+        .unwrap();
+    registry
+        .register_sink("capture", move |id: &str, _, _, _| {
+            Ok(Box::new(ManagedSink::new(CollectingSink::from_store(
+                id,
+                store.clone(),
+            ))) as Box<dyn courier::sinks::Sink>)
+        })
+        .unwrap();
+
+    let courier = registry
+        .build_courier(Config {
+            pipelines: vec![PipelineSpec {
+                name: "python-fail-pipeline".into(),
+                source: SourceSpec {
+                    kind: "vec".into(),
+                    config: json!({}),
+                },
+                transforms: vec![TransformSpec {
+                    kind: "script".into(),
+                    config: json!({
+                        "runtime": "python",
+                        "script": "def transform(env):\n    if env['payload']['fail']:\n        raise RuntimeError('boom')\n    env['payload']['processed'] = True\n    return env\n",
+                    }),
+                    on_error: Some(ErrorPolicyConfig::FailPipeline),
+                }],
+                sinks: vec![SinkSpec {
+                    kind: "capture".into(),
+                    config: json!({}),
+                    on_error: None,
+                    retry: None,
+                }],
+                channel_capacity: None,
+            }],
+        })
+        .unwrap();
+
+    let handles = courier.spawn(CancellationToken::new());
+    join_all(handles).await;
+
+    assert!(capture.handle().lock().unwrap().is_empty());
 }
 
 #[tokio::test]

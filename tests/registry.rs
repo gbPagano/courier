@@ -259,6 +259,105 @@ async fn built_in_lua_script_transform_runs_through_registry() {
 }
 
 #[tokio::test]
+async fn built_in_python_script_transform_runs_through_registry() {
+    let capture = SinkRegistry::default();
+
+    let mut registry = Registry::default();
+    register_builtin(&mut registry).unwrap();
+    registry.register_source("vec", vec_source_factory).unwrap();
+    registry
+        .register_sink("capture", capture.factory())
+        .unwrap();
+
+    let courier = registry
+        .build_courier(Config {
+            pipelines: vec![PipelineSpec {
+                name: "python-scripted".into(),
+                source: SourceSpec {
+                    kind: "vec".into(),
+                    config: json!({
+                        "items": [{ "value": 1 }],
+                    }),
+                },
+                transforms: vec![TransformSpec {
+                    kind: "script".into(),
+                    config: json!({
+                        "runtime": "python",
+                        "script": "def transform(env):\n    env['payload']['processed'] = True\n    return env\n",
+                    }),
+                    on_error: Some(ErrorPolicyConfig::Drop),
+                }],
+                sinks: vec![SinkSpec {
+                    kind: "capture".into(),
+                    config: json!({}),
+                    on_error: None,
+                    retry: None,
+                }],
+                channel_capacity: None,
+            }],
+        })
+        .unwrap();
+
+    let handles = courier.spawn(CancellationToken::new());
+    join_all(handles).await;
+
+    let collected = capture.get("python-scripted/sink0");
+    let items = collected.lock().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].payload, json!({ "value": 1, "processed": true }));
+}
+
+#[tokio::test]
+async fn built_in_python_script_transform_supports_custom_entrypoint() {
+    let capture = SinkRegistry::default();
+
+    let mut registry = Registry::default();
+    register_builtin(&mut registry).unwrap();
+    registry.register_source("vec", vec_source_factory).unwrap();
+    registry
+        .register_sink("capture", capture.factory())
+        .unwrap();
+
+    let courier = registry
+        .build_courier(Config {
+            pipelines: vec![PipelineSpec {
+                name: "python-custom-entrypoint".into(),
+                source: SourceSpec {
+                    kind: "vec".into(),
+                    config: json!({
+                        "items": [{ "value": 1 }],
+                    }),
+                },
+                transforms: vec![TransformSpec {
+                    kind: "script".into(),
+                    config: json!({
+                        "runtime": "python",
+                        "entrypoint": "process",
+                        "script": "def process(env):\n    env['payload']['processed'] = True\n    return env\n",
+                    }),
+                    on_error: Some(ErrorPolicyConfig::Drop),
+                }],
+                sinks: vec![SinkSpec {
+                    kind: "capture".into(),
+                    config: json!({}),
+                    on_error: None,
+                    retry: None,
+                }],
+                channel_capacity: None,
+            }],
+        })
+        .unwrap();
+
+    let handles = courier.spawn(CancellationToken::new());
+    join_all(handles).await;
+
+    let collected = capture.get("python-custom-entrypoint/sink0");
+    let items = collected.lock().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].payload, json!({ "value": 1, "processed": true }));
+}
+
+#[tokio::test]
 async fn built_in_script_transform_requires_runtime() {
     let capture = SinkRegistry::default();
 
@@ -350,6 +449,55 @@ async fn built_in_lua_script_transform_rejects_rhai_limits() {
 
     let msg = format!("{err:#}");
     assert!(msg.contains("Rhai-only limits"), "{msg}");
+}
+
+#[tokio::test]
+async fn built_in_python_script_transform_rejects_rhai_limits() {
+    let capture = SinkRegistry::default();
+
+    let mut registry = Registry::default();
+    register_builtin(&mut registry).unwrap();
+    registry.register_source("vec", vec_source_factory).unwrap();
+    registry
+        .register_sink("capture", capture.factory())
+        .unwrap();
+
+    let err = registry
+        .build_courier(Config {
+            pipelines: vec![PipelineSpec {
+                name: "python-rhai-limits".into(),
+                source: SourceSpec {
+                    kind: "vec".into(),
+                    config: json!({
+                        "items": [{ "value": 1 }],
+                    }),
+                },
+                transforms: vec![TransformSpec {
+                    kind: "script".into(),
+                    config: json!({
+                        "runtime": "python",
+                        "script": "def transform(env):\n    return env\n",
+                        "max_variables": 1,
+                    }),
+                    on_error: Some(ErrorPolicyConfig::Drop),
+                }],
+                sinks: vec![SinkSpec {
+                    kind: "capture".into(),
+                    config: json!({}),
+                    on_error: None,
+                    retry: None,
+                }],
+                channel_capacity: None,
+            }],
+        })
+        .err()
+        .expect("expected Python Rhai-limit validation error");
+
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("Rhai-only limits") && msg.contains("runtime 'python'"),
+        "{msg}"
+    );
 }
 
 #[tokio::test]

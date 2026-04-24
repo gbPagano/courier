@@ -11,6 +11,7 @@ use crate::pipeline::ErrorPolicy;
 use crate::transforms::{BasicTransform, MapOne, Transform};
 
 pub mod lua;
+pub mod python;
 pub mod rhai;
 
 trait ScriptEngine: Send + Sync {
@@ -47,6 +48,7 @@ impl<E: ScriptEngine> MapOne for ScriptMapOne<E> {
 enum ScriptRuntime {
     Rhai,
     Lua,
+    Python,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -59,6 +61,8 @@ struct RawScriptTransformConfig {
     #[serde(default = "default_entrypoint")]
     entrypoint: String,
     #[serde(default)]
+    python_bin: Option<String>,
+    #[serde(default)]
     max_operations: Option<u64>,
     #[serde(default)]
     max_call_levels: Option<usize>,
@@ -68,6 +72,22 @@ struct RawScriptTransformConfig {
     max_function_expr_depth: Option<usize>,
     #[serde(default)]
     max_variables: Option<usize>,
+}
+
+#[derive(Debug, Clone)]
+struct PythonConfig {
+    bin: String,
+}
+
+fn default_python_bin() -> String {
+    "python3".into()
+}
+
+fn resolve_python_bin(bin: Option<String>) -> String {
+    match bin {
+        Some(bin) if !bin.trim().is_empty() => bin,
+        _ => default_python_bin(),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -84,12 +104,26 @@ struct ScriptTransformConfig {
     runtime: ScriptRuntime,
     script: String,
     entrypoint: String,
+    python: Option<PythonConfig>,
     rhai: Option<RhaiConfig>,
 }
 
 impl RawScriptTransformConfig {
     fn resolve(self) -> Result<ScriptTransformConfig> {
-        let script = match (self.script, self.script_file) {
+        let RawScriptTransformConfig {
+            runtime,
+            script,
+            script_file,
+            entrypoint,
+            python_bin,
+            max_operations,
+            max_call_levels,
+            max_expr_depth,
+            max_function_expr_depth,
+            max_variables,
+        } = self;
+
+        let script = match (script, script_file) {
             (Some(_), Some(_)) => {
                 bail!("script transform: set either 'script' or 'script_file', not both")
             }
@@ -101,35 +135,59 @@ impl RawScriptTransformConfig {
                 .with_context(|| format!("failed to read script_file '{}'", path.display()))?,
         };
 
-        let rhai = match self.runtime {
-            ScriptRuntime::Rhai => Some(RhaiConfig {
-                max_operations: self.max_operations.unwrap_or_else(default_max_operations),
-                max_call_levels: self.max_call_levels.unwrap_or_else(default_max_call_levels),
-                max_expr_depth: self.max_expr_depth.unwrap_or_else(default_max_expr_depth),
-                max_function_expr_depth: self
-                    .max_function_expr_depth
-                    .unwrap_or_else(default_max_function_expr_depth),
-                max_variables: self.max_variables.unwrap_or_else(default_max_variables),
-            }),
+        let has_rhai_limits = max_operations.is_some()
+            || max_call_levels.is_some()
+            || max_expr_depth.is_some()
+            || max_function_expr_depth.is_some()
+            || max_variables.is_some();
+
+        let python = match runtime {
+            ScriptRuntime::Python => {
+                if has_rhai_limits {
+                    bail!(
+                        "script transform: Rhai-only limits (max_operations, max_call_levels, max_expr_depth, max_function_expr_depth, max_variables) are not supported for runtime 'python'"
+                    );
+                }
+                Some(PythonConfig {
+                    bin: resolve_python_bin(python_bin),
+                })
+            }
             ScriptRuntime::Lua => {
-                if self.max_operations.is_some()
-                    || self.max_call_levels.is_some()
-                    || self.max_expr_depth.is_some()
-                    || self.max_function_expr_depth.is_some()
-                    || self.max_variables.is_some()
-                {
+                if has_rhai_limits {
                     bail!(
                         "script transform: Rhai-only limits (max_operations, max_call_levels, max_expr_depth, max_function_expr_depth, max_variables) are not supported for runtime 'lua'"
                     );
+                }
+                if python_bin.is_some() {
+                    bail!("script transform: 'python_bin' is only supported for runtime 'python'");
+                }
+                None
+            }
+            ScriptRuntime::Rhai => {
+                if python_bin.is_some() {
+                    bail!("script transform: 'python_bin' is only supported for runtime 'python'");
                 }
                 None
             }
         };
 
+        let rhai = match runtime {
+            ScriptRuntime::Rhai => Some(RhaiConfig {
+                max_operations: max_operations.unwrap_or_else(default_max_operations),
+                max_call_levels: max_call_levels.unwrap_or_else(default_max_call_levels),
+                max_expr_depth: max_expr_depth.unwrap_or_else(default_max_expr_depth),
+                max_function_expr_depth: max_function_expr_depth
+                    .unwrap_or_else(default_max_function_expr_depth),
+                max_variables: max_variables.unwrap_or_else(default_max_variables),
+            }),
+            ScriptRuntime::Lua | ScriptRuntime::Python => None,
+        };
+
         Ok(ScriptTransformConfig {
-            runtime: self.runtime,
+            runtime,
             script,
-            entrypoint: self.entrypoint,
+            entrypoint,
+            python,
             rhai,
         })
     }
@@ -176,6 +234,10 @@ pub fn script_transform_factory(
         ),
         ScriptRuntime::Lua => Box::new(
             BasicTransform::new(ScriptMapOne::new(id, lua::LuaEngine::new(&config)?))
+                .with_error_policy(on_error),
+        ),
+        ScriptRuntime::Python => Box::new(
+            BasicTransform::new(ScriptMapOne::new(id, python::PythonEngine::new(&config)?))
                 .with_error_policy(on_error),
         ),
     };
@@ -382,6 +444,96 @@ mod tests {
         let msg = format!("{err:#}");
         assert!(
             msg.contains("Rhai-only limits") && msg.contains("runtime 'lua'"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn factory_resolves_python_through_registry() {
+        let registry = Registry::with_builtins().unwrap();
+        registry
+            .build_transform(
+                "p/t0",
+                TransformSpec {
+                    kind: "script".into(),
+                    config: json!({
+                        "runtime": "python",
+                        "script": "def transform(env):\n    return env\n",
+                    }),
+                    on_error: Some(ErrorPolicyConfig::Drop),
+                },
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn factory_loads_python_script_from_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("transform.py");
+        std::fs::write(&path, "def transform(env):\n    return env\n").unwrap();
+
+        let registry = Registry::with_builtins().unwrap();
+        registry
+            .build_transform(
+                "p/t0",
+                TransformSpec {
+                    kind: "script".into(),
+                    config: json!({
+                        "runtime": "python",
+                        "script_file": path,
+                    }),
+                    on_error: None,
+                },
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn factory_rejects_rhai_limits_for_python() {
+        let registry = Registry::with_builtins().unwrap();
+        let err = registry
+            .build_transform(
+                "p/t0",
+                TransformSpec {
+                    kind: "script".into(),
+                    config: json!({
+                        "runtime": "python",
+                        "script": "def transform(env):\n    return env\n",
+                        "max_variables": 1,
+                    }),
+                    on_error: None,
+                },
+            )
+            .err()
+            .expect("expected Python Rhai-limit validation error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("Rhai-only limits") && msg.contains("runtime 'python'"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn factory_rejects_python_bin_for_non_python_runtime() {
+        let registry = Registry::with_builtins().unwrap();
+        let err = registry
+            .build_transform(
+                "p/t0",
+                TransformSpec {
+                    kind: "script".into(),
+                    config: json!({
+                        "runtime": "lua",
+                        "script": "function transform(env) return env end",
+                        "python_bin": "python3",
+                    }),
+                    on_error: None,
+                },
+            )
+            .err()
+            .expect("expected python_bin validation error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("'python_bin' is only supported for runtime 'python'"),
             "{msg}"
         );
     }

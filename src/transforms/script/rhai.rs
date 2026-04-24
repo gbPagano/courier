@@ -90,6 +90,7 @@ mod tests {
             runtime: super::super::ScriptRuntime::Rhai,
             script: script.into(),
             entrypoint: "transform".into(),
+            python: None,
             rhai: Some(super::super::RhaiConfig {
                 max_operations: 100_000,
                 max_call_levels: 32,
