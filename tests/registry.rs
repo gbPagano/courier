@@ -16,7 +16,8 @@ use courier::config::{
 };
 use courier::envelope::Envelope;
 use courier::pipeline::ErrorPolicy;
-use courier::sinks::{BasicSink, Sink};
+use courier::retry::RetryPolicy;
+use courier::sinks::{ManagedSink, Sink};
 use courier::sources::Source;
 use courier::transforms::set_key::SetKeyTransform;
 use courier::transforms::{BasicTransform, Transform};
@@ -69,12 +70,19 @@ struct SinkRegistry {
 impl SinkRegistry {
     fn factory(
         &self,
-    ) -> impl Fn(&str, Value, ErrorPolicy) -> Result<Box<dyn Sink>> + Send + Sync + use<> {
+    ) -> impl Fn(&str, Value, ErrorPolicy, Option<RetryPolicy>) -> Result<Box<dyn Sink>>
+    + Send
+    + Sync
+    + use<> {
         let sinks = self.sinks.clone();
-        move |id: &str, _config: Value, on_error: ErrorPolicy| {
+        move |id: &str, _config: Value, on_error: ErrorPolicy, retry: Option<RetryPolicy>| {
             let sink = CollectingSink::new(id);
             sinks.lock().unwrap().insert(id.to_string(), sink.handle());
-            Ok(Box::new(BasicSink::new(sink).with_error_policy(on_error)) as Box<dyn Sink>)
+            let mut managed = ManagedSink::new(sink).with_error_policy(on_error);
+            if let Some(policy) = retry {
+                managed = managed.with_retry(policy);
+            }
+            Ok(Box::new(managed) as Box<dyn Sink>)
         }
     }
 
@@ -123,6 +131,7 @@ async fn end_to_end_pipeline_built_through_registry() {
                     kind: "capture".into(),
                     config: json!({}),
                     on_error: Some(ErrorPolicyConfig::Drop),
+                    retry: None,
                 }],
                 channel_capacity: None,
             }],
@@ -169,11 +178,13 @@ async fn registry_fan_out_to_multiple_sinks() {
                         kind: "capture".into(),
                         config: json!({}),
                         on_error: None,
+                        retry: None,
                     },
                     SinkSpec {
                         kind: "capture".into(),
                         config: json!({}),
                         on_error: None,
+                        retry: None,
                     },
                 ],
                 channel_capacity: None,

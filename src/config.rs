@@ -3,6 +3,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::pipeline::ErrorPolicy;
+use crate::retry::RetryPolicy;
 
 /// Shared helper for factory authors: deserialize a component spec into
 /// a typed config and wrap any failure with a uniform
@@ -46,6 +47,9 @@ pub struct SinkSpec {
     pub kind: String,
     pub config: Value,
     pub on_error: Option<ErrorPolicyConfig>,
+    /// Retry policy applied to every write by `ManagedSink`. When `None`
+    /// the sink makes a single attempt and defers to `on_error` on failure.
+    pub retry: Option<RetryPolicy>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]

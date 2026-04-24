@@ -10,7 +10,8 @@ use serde_json::Value;
 use crate::config::parse_config;
 use crate::envelope::Envelope;
 use crate::pipeline::ErrorPolicy;
-use crate::sinks::{BasicSink, Sink, WriteOne};
+use crate::retry::RetryPolicy;
+use crate::sinks::{ManagedSink, Sink, WriteOne};
 
 /// Kafka producer sink. Serializes the envelope payload as JSON and sends
 /// it to the configured topic. Uses `meta.key` as the record key when set,
@@ -76,12 +77,22 @@ struct KafkaSinkConfig {
 
 /// Registry factory for [`KafkaSink`]. Registered by
 /// `courier::registry::register_builtin` under kind `"kafka"`.
-pub fn kafka_sink_factory(id: &str, config: Value, on_error: ErrorPolicy) -> Result<Box<dyn Sink>> {
+///
+/// Retry and error policy are managed centrally by the registry and applied
+/// to every sink uniformly — no per-sink config needed.
+pub fn kafka_sink_factory(
+    id: &str,
+    config: Value,
+    on_error: ErrorPolicy,
+    retry: Option<RetryPolicy>,
+) -> Result<Box<dyn Sink>> {
     let config: KafkaSinkConfig = parse_config("kafka", config)?;
-    Ok(Box::new(
-        BasicSink::new(KafkaSink::new(id, &config.brokers, config.topic))
-            .with_error_policy(on_error),
-    ))
+    let kafka = KafkaSink::new(id, &config.brokers, config.topic);
+    let mut sink = ManagedSink::new(kafka).with_error_policy(on_error);
+    if let Some(policy) = retry {
+        sink = sink.with_retry(policy);
+    }
+    Ok(Box::new(sink))
 }
 
 #[cfg(test)]

@@ -23,6 +23,7 @@ use serde_json::Value;
 use crate::Courier;
 use crate::config::{Config, PipelineSpec, SinkSpec, SourceSpec, TransformSpec};
 use crate::pipeline::{ErrorPolicy, Pipeline};
+use crate::retry::RetryPolicy;
 use crate::sinks::Sink;
 use crate::sources::Source;
 use crate::transforms::Transform;
@@ -58,17 +59,31 @@ where
 }
 
 /// Builds a `Box<dyn Sink>` from a JSON spec. Factories that wrap a
-/// `WriteOne` in `BasicSink` are responsible for applying `on_error`.
+/// `WriteOne` in `ManagedSink` are responsible for applying `on_error` and
+/// `retry` — both are extracted from `SinkSpec` by the registry and passed
+/// directly, so no per-sink config parsing is needed for these policies.
 pub trait SinkFactory: Send + Sync {
-    fn build(&self, id: &str, config: Value, on_error: ErrorPolicy) -> Result<Box<dyn Sink>>;
+    fn build(
+        &self,
+        id: &str,
+        config: Value,
+        on_error: ErrorPolicy,
+        retry: Option<RetryPolicy>,
+    ) -> Result<Box<dyn Sink>>;
 }
 
 impl<F> SinkFactory for F
 where
-    F: Fn(&str, Value, ErrorPolicy) -> Result<Box<dyn Sink>> + Send + Sync,
+    F: Fn(&str, Value, ErrorPolicy, Option<RetryPolicy>) -> Result<Box<dyn Sink>> + Send + Sync,
 {
-    fn build(&self, id: &str, config: Value, on_error: ErrorPolicy) -> Result<Box<dyn Sink>> {
-        (self)(id, config, on_error)
+    fn build(
+        &self,
+        id: &str,
+        config: Value,
+        on_error: ErrorPolicy,
+        retry: Option<RetryPolicy>,
+    ) -> Result<Box<dyn Sink>> {
+        (self)(id, config, on_error, retry)
     }
 }
 
@@ -158,12 +173,13 @@ impl Registry {
     pub fn build_sink(&self, id: &str, spec: SinkSpec) -> Result<Box<dyn Sink>> {
         let kind = spec.kind;
         let on_error = spec.on_error.unwrap_or_default().into();
+        let retry = spec.retry;
         let factory = self
             .sink_factories
             .get(&kind)
             .with_context(|| format!("unknown sink type '{kind}'"))?;
         factory
-            .build(id, spec.config, on_error)
+            .build(id, spec.config, on_error, retry)
             .with_context(|| format!("failed to build sink '{kind}'"))
     }
 
@@ -250,6 +266,7 @@ mod tests {
     use super::*;
     use crate::config::{ErrorPolicyConfig, PipelineSpec, SinkSpec, SourceSpec, TransformSpec};
     use crate::envelope::Envelope;
+    use crate::retry::RetryPolicy;
 
     struct NoopSource(String);
 
@@ -298,7 +315,12 @@ mod tests {
         Ok(Box::new(NoopTransform(id.to_string())))
     }
 
-    fn noop_sink(id: &str, _: Value, _: ErrorPolicy) -> Result<Box<dyn Sink>> {
+    fn noop_sink(
+        id: &str,
+        _: Value,
+        _: ErrorPolicy,
+        _: Option<RetryPolicy>,
+    ) -> Result<Box<dyn Sink>> {
         Ok(Box::new(NoopSink(id.to_string())))
     }
 
@@ -332,6 +354,7 @@ mod tests {
             kind: "noop".into(),
             config: json!({}),
             on_error,
+            retry: None,
         }
     }
 
@@ -424,6 +447,7 @@ mod tests {
                     kind: "missing".into(),
                     config: json!({}),
                     on_error: None,
+                    retry: None,
                 },
             )
             .err()
@@ -507,10 +531,13 @@ mod tests {
             .unwrap();
         let rec = recorded.clone();
         registry
-            .register_sink("rec", move |id: &str, _: Value, _: ErrorPolicy| {
-                rec.lock().unwrap().push(id.to_string());
-                Ok(Box::new(NoopSink(id.into())) as Box<dyn Sink>)
-            })
+            .register_sink(
+                "rec",
+                move |id: &str, _: Value, _: ErrorPolicy, _: Option<RetryPolicy>| {
+                    rec.lock().unwrap().push(id.to_string());
+                    Ok(Box::new(NoopSink(id.into())) as Box<dyn Sink>)
+                },
+            )
             .unwrap();
 
         registry
@@ -538,11 +565,13 @@ mod tests {
                             kind: "rec".into(),
                             config: json!({}),
                             on_error: None,
+                            retry: None,
                         },
                         SinkSpec {
                             kind: "rec".into(),
                             config: json!({}),
                             on_error: None,
+                            retry: None,
                         },
                     ],
                     channel_capacity: None,
@@ -614,7 +643,7 @@ mod tests {
         registry
             .register_sink(
                 "tracking",
-                move |_: &str, _: Value, on_error: ErrorPolicy| {
+                move |_: &str, _: Value, on_error: ErrorPolicy, _: Option<RetryPolicy>| {
                     seen_sx.lock().unwrap().push(on_error);
                     Ok(Box::new(NoopSink("s".into())) as Box<dyn Sink>)
                 },
@@ -642,6 +671,7 @@ mod tests {
                         kind: "tracking".into(),
                         config: json!({}),
                         on_error: None,
+                        retry: None,
                     }],
                     channel_capacity: Some(32),
                 }],

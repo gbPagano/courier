@@ -26,5 +26,6 @@ serde_json = "1.0.145"
 toml = "0.9.8"
 
 [dev-dependencies]
+tempfile = "3"
 testcontainers-modules = { version = "0.15.0", features = ["kafka"] }
 wiremock = "0.6.5"

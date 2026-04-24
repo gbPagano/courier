@@ -74,6 +74,7 @@ fn gen_sink(sink: &SinkConfig) -> proc_macro2::TokenStream {
             kind: #kind.into(),
             config: #config,
             on_error: #on_error,
+            retry: None,
         }
     }
 }

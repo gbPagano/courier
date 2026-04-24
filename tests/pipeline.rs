@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 use courier::Courier;
 use courier::envelope::Envelope;
 use courier::pipeline::Pipeline;
-use courier::sinks::{BasicSink, WriteOne};
+use courier::sinks::{ManagedSink, WriteOne};
 use courier::sources::Source;
 use courier::transforms::set_key::SetKeyTransform;
 use courier::transforms::{BasicTransform, MapOne};
@@ -43,7 +43,7 @@ async fn source_transform_sink_end_to_end() {
         .with_transform(Box::new(BasicTransform::new(SetKeyTransform::new(
             "set_key", "user_id",
         ))))
-        .with_sink(Box::new(BasicSink::new(sink)));
+        .with_sink(Box::new(ManagedSink::new(sink)));
 
     let handles = Courier::new(vec![pipeline]).spawn(CancellationToken::new());
     join_all(handles).await;
@@ -66,8 +66,8 @@ async fn fan_out_to_multiple_sinks() {
     let store_b = sink_b.handle();
 
     let pipeline = Pipeline::new("fan", Box::new(source))
-        .with_sink(Box::new(BasicSink::new(sink_a)))
-        .with_sink(Box::new(BasicSink::new(sink_b)));
+        .with_sink(Box::new(ManagedSink::new(sink_a)))
+        .with_sink(Box::new(ManagedSink::new(sink_b)));
 
     let handles = Courier::new(vec![pipeline]).spawn(CancellationToken::new());
     join_all(handles).await;
@@ -99,7 +99,7 @@ async fn transform_filter_drops_envelopes() {
 
     let pipeline = Pipeline::new("p", Box::new(source))
         .with_transform(Box::new(BasicTransform::new(EvenOnly)))
-        .with_sink(Box::new(BasicSink::new(sink)));
+        .with_sink(Box::new(ManagedSink::new(sink)));
 
     let handles = Courier::new(vec![pipeline]).spawn(CancellationToken::new());
     join_all(handles).await;
@@ -137,7 +137,7 @@ async fn cancellation_stops_pipeline() {
     let sink = CollectingSink::new("sink");
     let store = sink.handle();
     let pipeline =
-        Pipeline::new("p", Box::new(InfiniteSource)).with_sink(Box::new(BasicSink::new(sink)));
+        Pipeline::new("p", Box::new(InfiniteSource)).with_sink(Box::new(ManagedSink::new(sink)));
 
     let cancel = CancellationToken::new();
     let handles = Courier::new(vec![pipeline]).spawn(cancel.clone());
@@ -198,7 +198,7 @@ async fn backpressure_blocks_source_on_full_channel() {
             produced: produced.clone(),
         }),
     )
-    .with_sink(Box::new(BasicSink::new(SlowSink)))
+    .with_sink(Box::new(ManagedSink::new(SlowSink)))
     .with_channel_capacity(4);
 
     let cancel = CancellationToken::new();

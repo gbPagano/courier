@@ -419,6 +419,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "tempfile",
  "testcontainers-modules",
  "tokio",
  "tokio-util",

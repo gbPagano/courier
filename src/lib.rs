@@ -12,11 +12,14 @@ pub mod config;
 pub mod envelope;
 pub mod pipeline;
 pub mod registry;
+pub mod retry;
 pub mod sinks;
 pub mod sources;
 pub mod transforms;
 
 pub use registry::{Registry, register_builtin};
+pub use retry::{ExhaustedPolicy, RetryPolicy};
+pub use sinks::ManagedSink;
 
 use pipeline::{Pipeline, spawn_pipeline};
 
