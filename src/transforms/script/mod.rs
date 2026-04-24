@@ -10,6 +10,7 @@ use crate::envelope::Envelope;
 use crate::pipeline::ErrorPolicy;
 use crate::transforms::{BasicTransform, MapOne, Transform};
 
+pub mod lua;
 pub mod rhai;
 
 trait ScriptEngine: Send + Sync {
@@ -45,6 +46,7 @@ impl<E: ScriptEngine> MapOne for ScriptMapOne<E> {
 #[serde(rename_all = "snake_case")]
 enum ScriptRuntime {
     Rhai,
+    Lua,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -56,15 +58,24 @@ struct RawScriptTransformConfig {
     script_file: Option<PathBuf>,
     #[serde(default = "default_entrypoint")]
     entrypoint: String,
-    #[serde(default = "default_max_operations")]
+    #[serde(default)]
+    max_operations: Option<u64>,
+    #[serde(default)]
+    max_call_levels: Option<usize>,
+    #[serde(default)]
+    max_expr_depth: Option<usize>,
+    #[serde(default)]
+    max_function_expr_depth: Option<usize>,
+    #[serde(default)]
+    max_variables: Option<usize>,
+}
+
+#[derive(Debug, Clone)]
+struct RhaiConfig {
     max_operations: u64,
-    #[serde(default = "default_max_call_levels")]
     max_call_levels: usize,
-    #[serde(default = "default_max_expr_depth")]
     max_expr_depth: usize,
-    #[serde(default = "default_max_function_expr_depth")]
     max_function_expr_depth: usize,
-    #[serde(default = "default_max_variables")]
     max_variables: usize,
 }
 
@@ -73,11 +84,7 @@ struct ScriptTransformConfig {
     runtime: ScriptRuntime,
     script: String,
     entrypoint: String,
-    max_operations: u64,
-    max_call_levels: usize,
-    max_expr_depth: usize,
-    max_function_expr_depth: usize,
-    max_variables: usize,
+    rhai: Option<RhaiConfig>,
 }
 
 impl RawScriptTransformConfig {
@@ -93,15 +100,37 @@ impl RawScriptTransformConfig {
             (None, Some(path)) => std::fs::read_to_string(&path)
                 .with_context(|| format!("failed to read script_file '{}'", path.display()))?,
         };
+
+        let rhai = match self.runtime {
+            ScriptRuntime::Rhai => Some(RhaiConfig {
+                max_operations: self.max_operations.unwrap_or_else(default_max_operations),
+                max_call_levels: self.max_call_levels.unwrap_or_else(default_max_call_levels),
+                max_expr_depth: self.max_expr_depth.unwrap_or_else(default_max_expr_depth),
+                max_function_expr_depth: self
+                    .max_function_expr_depth
+                    .unwrap_or_else(default_max_function_expr_depth),
+                max_variables: self.max_variables.unwrap_or_else(default_max_variables),
+            }),
+            ScriptRuntime::Lua => {
+                if self.max_operations.is_some()
+                    || self.max_call_levels.is_some()
+                    || self.max_expr_depth.is_some()
+                    || self.max_function_expr_depth.is_some()
+                    || self.max_variables.is_some()
+                {
+                    bail!(
+                        "script transform: Rhai-only limits (max_operations, max_call_levels, max_expr_depth, max_function_expr_depth, max_variables) are not supported for runtime 'lua'"
+                    );
+                }
+                None
+            }
+        };
+
         Ok(ScriptTransformConfig {
             runtime: self.runtime,
             script,
             entrypoint: self.entrypoint,
-            max_operations: self.max_operations,
-            max_call_levels: self.max_call_levels,
-            max_expr_depth: self.max_expr_depth,
-            max_function_expr_depth: self.max_function_expr_depth,
-            max_variables: self.max_variables,
+            rhai,
         })
     }
 }
@@ -143,6 +172,10 @@ pub fn script_transform_factory(
     let transform: Box<dyn Transform> = match config.runtime {
         ScriptRuntime::Rhai => Box::new(
             BasicTransform::new(ScriptMapOne::new(id, rhai::RhaiEngine::new(&config)?))
+                .with_error_policy(on_error),
+        ),
+        ScriptRuntime::Lua => Box::new(
+            BasicTransform::new(ScriptMapOne::new(id, lua::LuaEngine::new(&config)?))
                 .with_error_policy(on_error),
         ),
     };
@@ -189,6 +222,28 @@ mod tests {
                     kind: "script".into(),
                     config: json!({
                         "runtime": "rhai",
+                        "script_file": path,
+                    }),
+                    on_error: None,
+                },
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn factory_loads_lua_script_from_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("transform.lua");
+        std::fs::write(&path, "function transform(env) return env end").unwrap();
+
+        let registry = Registry::with_builtins().unwrap();
+        registry
+            .build_transform(
+                "p/t0",
+                TransformSpec {
+                    kind: "script".into(),
+                    config: json!({
+                        "runtime": "lua",
                         "script_file": path,
                     }),
                     on_error: None,
@@ -265,6 +320,73 @@ mod tests {
     }
 
     #[test]
+    fn factory_resolves_lua_through_registry() {
+        let registry = Registry::with_builtins().unwrap();
+        registry
+            .build_transform(
+                "p/t0",
+                TransformSpec {
+                    kind: "script".into(),
+                    config: json!({
+                        "runtime": "lua",
+                        "script": "function transform(env) return env end",
+                    }),
+                    on_error: Some(ErrorPolicyConfig::Drop),
+                },
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn factory_requires_runtime() {
+        let registry = Registry::with_builtins().unwrap();
+        let err = registry
+            .build_transform(
+                "p/t0",
+                TransformSpec {
+                    kind: "script".into(),
+                    config: json!({
+                        "script": "fn transform(env) { env }",
+                    }),
+                    on_error: None,
+                },
+            )
+            .err()
+            .expect("expected missing runtime error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("invalid config for component type 'script'"),
+            "{msg}"
+        );
+        assert!(msg.contains("runtime"), "{msg}");
+    }
+
+    #[test]
+    fn factory_rejects_rhai_limits_for_lua() {
+        let registry = Registry::with_builtins().unwrap();
+        let err = registry
+            .build_transform(
+                "p/t0",
+                TransformSpec {
+                    kind: "script".into(),
+                    config: json!({
+                        "runtime": "lua",
+                        "script": "function transform(env) return env end",
+                        "max_operations": 1,
+                    }),
+                    on_error: None,
+                },
+            )
+            .err()
+            .expect("expected Lua Rhai-limit validation error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("Rhai-only limits") && msg.contains("runtime 'lua'"),
+            "{msg}"
+        );
+    }
+
+    #[test]
     fn factory_reports_invalid_runtime() {
         let registry = Registry::with_builtins().unwrap();
         let result = registry.build_transform(
@@ -272,7 +394,7 @@ mod tests {
             TransformSpec {
                 kind: "script".into(),
                 config: json!({
-                    "runtime": "lua",
+                    "runtime": "bogus",
                     "script": "fn transform(env) { env }",
                 }),
                 on_error: None,

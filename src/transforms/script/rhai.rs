@@ -20,12 +20,17 @@ impl ScriptEngine for RhaiEngine {
 
 impl RhaiEngine {
     pub(super) fn new(config: &ScriptTransformConfig) -> Result<Self> {
+        let limits = config
+            .rhai
+            .as_ref()
+            .expect("Rhai config missing for Rhai runtime");
+
         let mut engine = Engine::new();
         engine
-            .set_max_operations(config.max_operations)
-            .set_max_call_levels(config.max_call_levels)
-            .set_max_expr_depths(config.max_expr_depth, config.max_function_expr_depth)
-            .set_max_variables(config.max_variables);
+            .set_max_operations(limits.max_operations)
+            .set_max_call_levels(limits.max_call_levels)
+            .set_max_expr_depths(limits.max_expr_depth, limits.max_function_expr_depth)
+            .set_max_variables(limits.max_variables);
 
         let ast = engine
             .compile(&config.script)
@@ -85,11 +90,13 @@ mod tests {
             runtime: super::super::ScriptRuntime::Rhai,
             script: script.into(),
             entrypoint: "transform".into(),
-            max_operations: 100_000,
-            max_call_levels: 32,
-            max_expr_depth: 64,
-            max_function_expr_depth: 32,
-            max_variables: 64,
+            rhai: Some(super::super::RhaiConfig {
+                max_operations: 100_000,
+                max_call_levels: 32,
+                max_expr_depth: 64,
+                max_function_expr_depth: 32,
+                max_variables: 64,
+            }),
         }
     }
 

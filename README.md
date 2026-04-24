@@ -54,17 +54,18 @@ topic = "topic1"
 
 ### Script transform
 
-Courier includes a built-in `script` transform powered by **Rhai**.
+Courier includes a built-in `script` transform with multiple runtimes.
 
 Supported config fields:
-- `runtime` — currently only `"rhai"`
-- `script` — inline Rhai source code
+- `runtime` — required, one of `"rhai"` or `"lua"`
+- `script` — inline source code for the selected runtime
+- `script_file` — load source code from disk for the selected runtime
 - `entrypoint` — optional, defaults to `"transform"`
-- `max_operations` — optional execution budget, defaults to `100000`
-- `max_call_levels` — optional, defaults to `32`
-- `max_expr_depth` — optional, defaults to `64`
-- `max_function_expr_depth` — optional, defaults to `32`
-- `max_variables` — optional, defaults to `64`
+- `max_operations` — Rhai-only optional execution budget, defaults to `100000`
+- `max_call_levels` — Rhai-only optional, defaults to `32`
+- `max_expr_depth` — Rhai-only optional, defaults to `64`
+- `max_function_expr_depth` — Rhai-only optional, defaults to `32`
+- `max_variables` — Rhai-only optional, defaults to `64`
 
 The script receives an `env` object with:
 - `env.meta.key`
@@ -75,8 +76,79 @@ The script receives an `env` object with:
 
 Return behavior:
 - return `env` to emit a transformed envelope
-- return `()` to filter the envelope out
+- Rhai: return `()` to filter the envelope out
+- Lua: return `nil` to filter the envelope out
 - runtime errors follow the transform `on_error` policy
+
+Lua rejects the Rhai-only limit fields instead of silently ignoring them.
+
+Rhai example:
+
+```toml
+[[pipelines]]
+name = "api->kafka-with-script"
+
+[pipelines.source]
+type = "api_poll"
+url = "https://jsonplaceholder.typicode.com/posts/1"
+interval_secs = 3
+
+[[pipelines.transforms]]
+type = "script"
+runtime = "rhai"
+on_error = "drop"
+script = """
+fn transform(env) {
+  if env.payload["userId"] == 1 {
+    env.meta.headers["priority"] = "high";
+  }
+
+  env.payload["processed"] = true;
+  env
+}
+"""
+
+[[pipelines.sinks]]
+type = "kafka"
+brokers = "localhost:9092"
+topic = "topic1"
+```
+
+Lua example:
+
+```toml
+[[pipelines.transforms]]
+type = "script"
+runtime = "lua"
+script = """
+function transform(env)
+  if env.payload.userId == 1 then
+    env.meta.headers.priority = "high"
+  end
+
+  env.payload.processed = true
+  return env
+end
+"""
+```
+
+Lua `script_file` example:
+
+```toml
+[[pipelines.transforms]]
+type = "script"
+runtime = "lua"
+script_file = "./transforms/enrich.lua"
+```
+
+Example `transforms/enrich.lua`:
+
+```lua
+function transform(env)
+  env.payload.processed = true
+  return env
+end
+```
 
 Example:
 
