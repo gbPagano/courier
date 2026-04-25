@@ -1,0 +1,118 @@
+/* --------------------------------------------------------------------------
+ * Home hero
+ * Applied to docs/index.md via overrides/home.html.
+ * -------------------------------------------------------------------------- */
+
+.cx-hero {
+  background:
+    radial-gradient(circle at 0% 0%, rgba(99, 102, 241, 0.18), transparent 55%),
+    radial-gradient(circle at 100% 100%, rgba(236, 72, 153, 0.14), transparent 55%),
+    linear-gradient(180deg, var(--md-default-bg-color) 0%, var(--md-default-bg-color) 100%);
+  border-bottom: 1px solid var(--md-default-fg-color--lightest);
+  padding: 4rem 0 3.5rem;
+}
+
+[data-md-color-scheme="slate"] .cx-hero {
+  background:
+    radial-gradient(circle at 0% 0%, rgba(129, 140, 248, 0.20), transparent 55%),
+    radial-gradient(circle at 100% 100%, rgba(244, 114, 182, 0.18), transparent 55%),
+    linear-gradient(180deg, var(--md-default-bg-color) 0%, var(--md-default-bg-color) 100%);
+}
+
+.cx-hero__inner {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+  gap: 3rem;
+  align-items: center;
+}
+
+@media (max-width: 1000px) {
+  .cx-hero__inner {
+    grid-template-columns: 1fr;
+    gap: 2.25rem;
+  }
+}
+
+.cx-hero__eyebrow {
+  margin: 0 0 0.9rem;
+}
+
+.cx-hero__badge {
+  display: inline-block;
+  padding: 0.25rem 0.65rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--md-primary-fg-color);
+  background: color-mix(in srgb, var(--md-primary-fg-color) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--md-primary-fg-color) 30%, transparent);
+  border-radius: 999px;
+}
+
+.cx-hero__title {
+  margin: 0 0 1rem;
+  font-size: 4rem;
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+  font-weight: 800;
+  background: linear-gradient(135deg, var(--md-primary-fg-color), color-mix(in srgb, var(--md-primary-fg-color) 50%, #ec4899));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.cx-hero__subtitle {
+  margin: 0 0 2rem;
+  font-size: 1.1rem;
+  line-height: 1.55;
+  color: var(--md-default-fg-color--light);
+  max-width: 36rem;
+}
+
+.cx-hero__subtitle code {
+  font-size: 0.9em;
+  padding: 0.1rem 0.45rem;
+  border-radius: 0.35rem;
+  background: var(--md-code-bg-color);
+  color: var(--md-code-fg-color);
+}
+
+.cx-hero__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.cx-hero__cta {
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.cx-hero__preview pre {
+  margin: 0;
+  padding: 1.4rem 1.5rem;
+  background: var(--md-code-bg-color);
+  color: var(--md-code-fg-color);
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.85rem;
+  font-size: 0.78rem;
+  line-height: 1.55;
+  overflow-x: auto;
+  box-shadow:
+    0 30px 60px -25px rgba(15, 23, 42, 0.35),
+    0 8px 20px -10px rgba(15, 23, 42, 0.25);
+}
+
+[data-md-color-scheme="slate"] .cx-hero__preview pre {
+  box-shadow:
+    0 30px 60px -25px rgba(0, 0, 0, 0.7),
+    0 8px 20px -10px rgba(0, 0, 0, 0.5);
+}
+
+/* Lightweight TOML token coloring — reads the existing pygments palette so it
+ * matches whichever scheme is active. Falls back to sane defaults. */
+.cx-tok-key  { color: var(--md-code-hl-name-color, #6f42c1); font-weight: 600; }
+.cx-tok-attr { color: var(--md-code-hl-keyword-color, #0550ae); }
+.cx-tok-str  { color: var(--md-code-hl-string-color, #0a7f4f); }
+.cx-tok-num  { color: var(--md-code-hl-number-color, #b45309); }
