@@ -178,7 +178,35 @@ impl From<ErrorPolicyConfig> for ErrorPolicy {
 
 #[derive(Debug, Deserialize)]
 struct RawConfig {
+    #[serde(default)]
+    defaults: RawDefaults,
     pipelines: Vec<RawPipelineConfig>,
+}
+
+/// Per-file defaults applied to components that omit the matching field.
+/// Scope is intentionally per-file: in directory mode each file is parsed
+/// independently before pipelines are concatenated, so defaults never
+/// leak across files (and load order can't change behavior).
+#[derive(Debug, Default, Deserialize)]
+struct RawDefaults {
+    #[serde(default)]
+    sink: RawSinkDefaults,
+    #[serde(default)]
+    transform: RawTransformDefaults,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawSinkDefaults {
+    #[serde(default)]
+    on_error: Option<RawErrorPolicyConfig>,
+    #[serde(default)]
+    retry: Option<RetryPolicy>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawTransformDefaults {
+    #[serde(default)]
+    on_error: Option<RawErrorPolicyConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -232,21 +260,32 @@ enum RawErrorPolicyConfig {
 
 impl From<RawConfig> for Config {
     fn from(value: RawConfig) -> Self {
+        let defaults = value.defaults;
         Self {
-            pipelines: value.pipelines.into_iter().map(Into::into).collect(),
+            pipelines: value
+                .pipelines
+                .into_iter()
+                .map(|p| pipeline_from_raw(p, &defaults))
+                .collect(),
         }
     }
 }
 
-impl From<RawPipelineConfig> for PipelineSpec {
-    fn from(value: RawPipelineConfig) -> Self {
-        Self {
-            name: value.name,
-            source: value.source.into(),
-            transforms: value.transforms.into_iter().map(Into::into).collect(),
-            sinks: value.sinks.into_iter().map(Into::into).collect(),
-            channel_capacity: value.channel_capacity,
-        }
+fn pipeline_from_raw(value: RawPipelineConfig, defaults: &RawDefaults) -> PipelineSpec {
+    PipelineSpec {
+        name: value.name,
+        source: value.source.into(),
+        transforms: value
+            .transforms
+            .into_iter()
+            .map(|t| transform_from_raw(t, &defaults.transform))
+            .collect(),
+        sinks: value
+            .sinks
+            .into_iter()
+            .map(|s| sink_from_raw(s, &defaults.sink))
+            .collect(),
+        channel_capacity: value.channel_capacity,
     }
 }
 
@@ -259,24 +298,24 @@ impl From<RawSourceConfig> for SourceSpec {
     }
 }
 
-impl From<RawTransformConfig> for TransformSpec {
-    fn from(value: RawTransformConfig) -> Self {
-        Self {
-            kind: value.kind,
-            config: Value::Object(value.config),
-            on_error: value.on_error.map(Into::into),
-        }
+/// Shallow merge: an explicit per-component value entirely wins over the
+/// default. Deep-merging policy structs would buy little for the
+/// configuration cost — operators who want different `RetryPolicy` shapes
+/// just spell them out in full on the component.
+fn transform_from_raw(value: RawTransformConfig, defaults: &RawTransformDefaults) -> TransformSpec {
+    TransformSpec {
+        kind: value.kind,
+        config: Value::Object(value.config),
+        on_error: value.on_error.or(defaults.on_error).map(Into::into),
     }
 }
 
-impl From<RawSinkConfig> for SinkSpec {
-    fn from(value: RawSinkConfig) -> Self {
-        Self {
-            kind: value.kind,
-            config: Value::Object(value.config),
-            on_error: value.on_error.map(Into::into),
-            retry: value.retry,
-        }
+fn sink_from_raw(value: RawSinkConfig, defaults: &RawSinkDefaults) -> SinkSpec {
+    SinkSpec {
+        kind: value.kind,
+        config: Value::Object(value.config),
+        on_error: value.on_error.or(defaults.on_error).map(Into::into),
+        retry: value.retry.or_else(|| defaults.retry.clone()),
     }
 }
 
@@ -654,5 +693,325 @@ mod tests {
         let err = Config::load(&path).unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("unsupported config file extension"), "{msg}");
+    }
+
+    // -----------------------------------------------------------------
+    // [defaults]
+    // -----------------------------------------------------------------
+
+    fn dlq_at(path: &str) -> ExhaustedPolicy {
+        ExhaustedPolicy::DeadLetter {
+            path: PathBuf::from(path),
+        }
+    }
+
+    #[test]
+    fn defaults_apply_when_components_omit_fields() {
+        let config = Config::from_toml_str(
+            r#"
+            [defaults.sink]
+            on_error = "fail_pipeline"
+
+            [defaults.sink.retry]
+            max_attempts = 5
+            initial_delay_ms = 200
+            backoff_multiplier = 2.0
+            max_delay_ms = 5000
+
+            [defaults.sink.retry.on_exhausted]
+            kind = "dead_letter"
+            path = "/var/log/dlq.jsonl"
+
+            [defaults.transform]
+            on_error = "drop"
+
+            [[pipelines]]
+            name = "p"
+
+            [pipelines.source]
+            type = "noop"
+
+            [[pipelines.transforms]]
+            type = "noop"
+
+            [[pipelines.sinks]]
+            type = "noop"
+            "#,
+        )
+        .unwrap();
+
+        let p = &config.pipelines[0];
+        assert_eq!(p.transforms[0].on_error, Some(ErrorPolicyConfig::Drop));
+        assert_eq!(p.sinks[0].on_error, Some(ErrorPolicyConfig::FailPipeline));
+        let retry = p.sinks[0].retry.as_ref().expect("default retry");
+        assert_eq!(retry.max_attempts, 5);
+        assert_eq!(retry.on_exhausted, dlq_at("/var/log/dlq.jsonl"));
+    }
+
+    #[test]
+    fn component_value_overrides_default() {
+        // Both defaults and component-level fields are set — component wins.
+        let config = Config::from_toml_str(
+            r#"
+            [defaults.sink]
+            on_error = "fail_pipeline"
+
+            [defaults.sink.retry]
+            max_attempts = 5
+            initial_delay_ms = 200
+            backoff_multiplier = 2.0
+            max_delay_ms = 5000
+
+            [defaults.sink.retry.on_exhausted]
+            kind = "dead_letter"
+            path = "/default.jsonl"
+
+            [defaults.transform]
+            on_error = "drop"
+
+            [[pipelines]]
+            name = "p"
+
+            [pipelines.source]
+            type = "noop"
+
+            [[pipelines.transforms]]
+            type = "noop"
+            on_error = "fail_pipeline"
+
+            [[pipelines.sinks]]
+            type = "noop"
+            on_error = "drop"
+
+            [pipelines.sinks.retry]
+            max_attempts = 1
+            initial_delay_ms = 0
+            backoff_multiplier = 1.0
+            max_delay_ms = 0
+            on_exhausted = { kind = "propagate" }
+            "#,
+        )
+        .unwrap();
+
+        let p = &config.pipelines[0];
+        assert_eq!(
+            p.transforms[0].on_error,
+            Some(ErrorPolicyConfig::FailPipeline),
+        );
+        assert_eq!(p.sinks[0].on_error, Some(ErrorPolicyConfig::Drop));
+        let retry = p.sinks[0].retry.as_ref().expect("component retry");
+        assert_eq!(retry.max_attempts, 1);
+        assert_eq!(retry.on_exhausted, ExhaustedPolicy::Propagate);
+    }
+
+    #[test]
+    fn shallow_merge_replaces_whole_retry_block() {
+        // Component supplies retry but not on_error — only the missing
+        // field falls back to the default; retry is taken whole, not
+        // merged field-by-field with the default's retry.
+        let config = Config::from_toml_str(
+            r#"
+            [defaults.sink]
+            on_error = "fail_pipeline"
+
+            [defaults.sink.retry]
+            max_attempts = 9
+            initial_delay_ms = 999
+            backoff_multiplier = 9.0
+            max_delay_ms = 99999
+            on_exhausted = { kind = "dead_letter", path = "/default.jsonl" }
+
+            [[pipelines]]
+            name = "p"
+            [pipelines.source]
+            type = "noop"
+
+            [[pipelines.sinks]]
+            type = "noop"
+
+            [pipelines.sinks.retry]
+            max_attempts = 2
+            initial_delay_ms = 1
+            backoff_multiplier = 1.0
+            max_delay_ms = 5
+            on_exhausted = { kind = "propagate" }
+            "#,
+        )
+        .unwrap();
+
+        let sink = &config.pipelines[0].sinks[0];
+        // on_error came from defaults (component omitted it).
+        assert_eq!(sink.on_error, Some(ErrorPolicyConfig::FailPipeline));
+        // retry is the component's retry verbatim, not a merge.
+        let retry = sink.retry.as_ref().unwrap();
+        assert_eq!(retry.max_attempts, 2);
+        assert_eq!(retry.initial_delay_ms, 1);
+        assert_eq!(retry.backoff_multiplier, 1.0);
+        assert_eq!(retry.max_delay_ms, 5);
+        assert_eq!(retry.on_exhausted, ExhaustedPolicy::Propagate);
+    }
+
+    #[test]
+    fn defaults_only_partial_sink_block_works() {
+        // [defaults.sink] sets only retry; on_error left None means
+        // components without on_error keep on_error = None (i.e. fall
+        // back to the runtime default of Drop).
+        let config = Config::from_toml_str(
+            r#"
+            [defaults.sink.retry]
+            max_attempts = 4
+            initial_delay_ms = 50
+            backoff_multiplier = 2.0
+            max_delay_ms = 1000
+            on_exhausted = { kind = "propagate" }
+
+            [[pipelines]]
+            name = "p"
+            [pipelines.source]
+            type = "noop"
+
+            [[pipelines.sinks]]
+            type = "noop"
+            "#,
+        )
+        .unwrap();
+
+        let sink = &config.pipelines[0].sinks[0];
+        assert_eq!(sink.on_error, None);
+        let retry = sink.retry.as_ref().unwrap();
+        assert_eq!(retry.max_attempts, 4);
+    }
+
+    #[test]
+    fn defaults_only_apply_to_their_own_category() {
+        // A sink default must not bleed into transforms (and vice versa).
+        let config = Config::from_toml_str(
+            r#"
+            [defaults.sink]
+            on_error = "fail_pipeline"
+
+            [[pipelines]]
+            name = "p"
+            [pipelines.source]
+            type = "noop"
+
+            [[pipelines.transforms]]
+            type = "noop"
+
+            [[pipelines.sinks]]
+            type = "noop"
+            "#,
+        )
+        .unwrap();
+
+        let p = &config.pipelines[0];
+        assert_eq!(p.transforms[0].on_error, None);
+        assert_eq!(p.sinks[0].on_error, Some(ErrorPolicyConfig::FailPipeline));
+    }
+
+    #[test]
+    fn json_and_toml_parse_defaults_identically() {
+        let toml = Config::from_toml_str(
+            r#"
+            [defaults.sink]
+            on_error = "fail_pipeline"
+
+            [defaults.sink.retry]
+            max_attempts = 3
+            initial_delay_ms = 100
+            backoff_multiplier = 2.0
+            max_delay_ms = 1000
+            on_exhausted = { kind = "dead_letter", path = "/dlq.jsonl" }
+
+            [defaults.transform]
+            on_error = "drop"
+
+            [[pipelines]]
+            name = "p"
+            [pipelines.source]
+            type = "noop"
+            [[pipelines.transforms]]
+            type = "noop"
+            [[pipelines.sinks]]
+            type = "noop"
+            "#,
+        )
+        .unwrap();
+
+        let json = Config::from_json_str(
+            r#"{
+              "defaults": {
+                "sink": {
+                  "on_error": "fail_pipeline",
+                  "retry": {
+                    "max_attempts": 3,
+                    "initial_delay_ms": 100,
+                    "backoff_multiplier": 2.0,
+                    "max_delay_ms": 1000,
+                    "on_exhausted": { "kind": "dead_letter", "path": "/dlq.jsonl" }
+                  }
+                },
+                "transform": { "on_error": "drop" }
+              },
+              "pipelines": [
+                {
+                  "name": "p",
+                  "source": { "type": "noop" },
+                  "transforms": [{ "type": "noop" }],
+                  "sinks": [{ "type": "noop" }]
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(toml, json);
+    }
+
+    #[test]
+    fn directory_mode_keeps_defaults_per_file() {
+        // Two files: one declares a sink default, the other does not.
+        // The sink in the second file must NOT inherit the first file's
+        // default. This guarantees load order can't change behavior.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("a.toml"),
+            r#"
+            [defaults.sink]
+            on_error = "fail_pipeline"
+
+            [[pipelines]]
+            name = "with-default"
+            [pipelines.source]
+            type = "noop"
+            [[pipelines.sinks]]
+            type = "noop"
+            "#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("b.toml"),
+            r#"
+            [[pipelines]]
+            name = "no-default"
+            [pipelines.source]
+            type = "noop"
+            [[pipelines.sinks]]
+            type = "noop"
+            "#,
+        )
+        .unwrap();
+
+        let config = Config::load(dir.path()).unwrap();
+        let by_name: std::collections::HashMap<_, _> = config
+            .pipelines
+            .iter()
+            .map(|p| (p.name.as_str(), p))
+            .collect();
+        assert_eq!(
+            by_name["with-default"].sinks[0].on_error,
+            Some(ErrorPolicyConfig::FailPipeline),
+        );
+        assert_eq!(by_name["no-default"].sinks[0].on_error, None);
     }
 }

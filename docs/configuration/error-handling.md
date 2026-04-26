@@ -87,6 +87,37 @@ Once retries are exhausted, `on_exhausted` decides the fate of the envelope:
 
 The dead-letter file format is one JSON envelope per line; treat it as provisional until Courier reaches 1.0.
 
+## Defaults
+
+Repeating the same `on_error` and `retry` block on every sink across every pipeline gets noisy fast. A top-level `[defaults]` block lets you set them once and override per-component when needed.
+
+```toml
+[defaults.sink]
+on_error = "fail_pipeline"
+
+[defaults.sink.retry]
+max_attempts = 5
+initial_delay_ms = 200
+backoff_multiplier = 2.0
+max_delay_ms = 5000
+on_exhausted = { kind = "dead_letter", path = "/var/log/courier/dlq.jsonl" }
+
+[defaults.transform]
+on_error = "drop"
+```
+
+Supported keys:
+
+| Key                         | Applied to | Description |
+| --------------------------- | ---------- | ----------- |
+| `defaults.sink.on_error`    | every sink | Used when the sink omits `on_error`. |
+| `defaults.sink.retry`       | every sink | Used when the sink omits the `retry` block. |
+| `defaults.transform.on_error` | every transform | Used when the transform omits `on_error`. |
+
+Merge semantics are **shallow**: a per-component value entirely replaces the default. That means a sink that defines its own `[pipelines.sinks.retry]` does *not* inherit individual fields from `[defaults.sink.retry]` — spell out the full retry block when you want to deviate.
+
+In directory mode (`COURIER_CONFIG=./conf.d`) defaults are **per file**: each file is parsed independently, so a default declared in `a.toml` never leaks into pipelines defined in `b.toml`. This keeps load order from quietly changing behavior.
+
 ## Choosing a strategy
 
 - For idempotent sinks, prefer `dead_letter` with a generous `max_attempts` — transient blips will retry, and persistent failures land in a file you can inspect or replay.

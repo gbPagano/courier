@@ -67,4 +67,6 @@ Plugin model:
 
 `Config::load(path)` accepts either a single file (parser picked by `.toml`/`.json` extension) or a directory (every `.toml`/`.json` file merged in sorted order, duplicate pipeline names rejected). `Config::from_toml_str` and `Config::from_json_str` are the in-memory entry points. Both go through the same private `Raw*` layer that flattens arbitrary per-component fields (anything other than `type`, `on_error`, `retry`) into the component's `config: serde_json::Value` bucket; factories deserialize their own typed config through `parse_config`. TOML datetimes are stringified on the way through (no native JSON equivalent).
 
+A top-level `[defaults]` block (see `RawDefaults` in `src/config.rs`) fills `on_error` / `retry` slots that components leave blank. Merge is shallow (component value wins entirely) and per-file (in directory mode each file's defaults stay scoped to that file, so load order can't change behavior).
+
 `src/main.rs` reads `COURIER_CONFIG` (default `config.toml`), calls `Config::load`, builds a `Registry::with_builtins()`, and hands the config to `registry.build_courier(...)`. Bad config fails at startup with path-annotated `anyhow` errors rather than blocking compilation.
