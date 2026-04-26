@@ -5,6 +5,7 @@ use tokio_util::sync::CancellationToken;
 use crate::envelope::Envelope;
 
 pub mod api;
+pub mod http_webhook;
 pub mod kafka;
 
 /// A pipeline source.

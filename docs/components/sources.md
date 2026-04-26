@@ -20,6 +20,34 @@ interval_secs = 3
 
 The response body is parsed as JSON and used as `payload`. `meta.source_id` is set to the pipeline's source node id; `meta.timestamp_ms` is stamped at fetch time.
 
+## `http_webhook`
+
+Listens for incoming HTTP requests and emits one envelope per accepted request.
+
+```toml
+[pipelines.source]
+type = "http_webhook"
+bind = "0.0.0.0:8080"
+path = "/webhooks/events"
+```
+
+| Field  | Required | Description |
+| ------ | -------- | ----------- |
+| `bind` | yes      | Socket address to listen on, for example `"0.0.0.0:8080"` or `"127.0.0.1:9000"`. |
+| `path` | yes      | Exact request path to accept. Must start with `/`. |
+
+Only `POST` requests are accepted. The request body must be valid JSON. Courier parses the raw JSON request body and uses it directly as `payload`; it does not wrap the body in an additional object. Request headers with UTF-8 values are copied into `meta.headers` as `http.header.<header-name>`, using the lower-case header name as normalized by the HTTP stack. `meta.source_id` is set to the pipeline's source node id and `meta.timestamp_ms` is stamped when the request is accepted.
+
+Invalid requests return client errors without emitting an envelope:
+
+| Case | Response |
+| ---- | -------- |
+| Wrong path | `404 Not Found` |
+| Non-POST method | `405 Method Not Allowed` |
+| Invalid JSON body | `400 Bad Request` |
+
+The source sends the envelope into the pipeline channel before responding `202 Accepted`, so a full downstream channel applies backpressure to the HTTP request. If the pipeline is no longer accepting events, the source returns `503 Service Unavailable`.
+
 ## `kafka`
 
 Consumes from a Kafka topic via `rdkafka` and emits one envelope per record.

@@ -244,6 +244,10 @@ impl Registry {
 /// that want to override a built-in should do so *after* this call.
 pub fn register_builtin(registry: &mut Registry) -> Result<()> {
     registry.register_source("api_poll", crate::sources::api::api_poll_source_factory)?;
+    registry.register_source(
+        "http_webhook",
+        crate::sources::http_webhook::http_webhook_source_factory,
+    )?;
     registry.register_source("kafka", crate::sources::kafka::kafka_source_factory)?;
     registry.register_transform(
         "script",
@@ -478,7 +482,7 @@ mod tests {
 
         let mut sources: Vec<_> = registry.source_kinds().collect();
         sources.sort();
-        assert_eq!(sources, vec!["api_poll", "kafka"]);
+        assert_eq!(sources, vec!["api_poll", "http_webhook", "kafka"]);
 
         let mut transforms: Vec<_> = registry.transform_kinds().collect();
         transforms.sort();

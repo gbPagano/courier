@@ -26,6 +26,27 @@ brokers = "localhost:9092"
 topic = "topic1"
 ```
 
+## Webhook → Kafka
+
+Accept HTTP webhook events and forward the JSON request body to Kafka.
+
+```toml
+[[pipelines]]
+name = "webhook->kafka"
+
+[pipelines.source]
+type = "http_webhook"
+bind = "0.0.0.0:8080"
+path = "/webhooks/events"
+
+[[pipelines.sinks]]
+type = "kafka"
+brokers = "localhost:9092"
+topic = "incoming-events"
+```
+
+Requests must use `POST` on the configured path, and the body must be valid JSON. The raw JSON body becomes `payload`; request headers are copied to `meta.headers` as `http.header.<header-name>`.
+
 ## API → Kafka, with a partition key
 
 Use the [`set_key`](components/transforms.md#set_key) transform to partition records by a payload field.
