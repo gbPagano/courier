@@ -199,20 +199,20 @@ fn validate_retry_policy(policy: &RetryPolicy, path: &str) -> Result<()> {
             bail!("{path}.on_exhausted.path: dead-letter path must not be empty");
         }
 
-        if let Some(parent) = dlq_path.parent() {
-            if !parent.as_os_str().is_empty() {
-                if !parent.exists() {
-                    bail!(
-                        "{path}.on_exhausted.path: parent directory '{}' does not exist",
-                        parent.display()
-                    );
-                }
-                if !parent.is_dir() {
-                    bail!(
-                        "{path}.on_exhausted.path: parent '{}' is not a directory",
-                        parent.display()
-                    );
-                }
+        if let Some(parent) = dlq_path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            if !parent.exists() {
+                bail!(
+                    "{path}.on_exhausted.path: parent directory '{}' does not exist",
+                    parent.display()
+                );
+            }
+            if !parent.is_dir() {
+                bail!(
+                    "{path}.on_exhausted.path: parent '{}' is not a directory",
+                    parent.display()
+                );
             }
         }
     }
