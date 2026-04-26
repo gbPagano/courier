@@ -8,6 +8,7 @@ use crate::pipeline::ErrorPolicy;
 use crate::retry::RetryPolicy;
 
 pub mod api;
+pub mod file;
 pub mod kafka;
 mod retry;
 

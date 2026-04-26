@@ -10,7 +10,7 @@ Courier ships with a small set of built-in components. Every one of them is regi
 | --------- | ---------------- |
 | Source    | `api_poll`, `kafka` |
 | Transform | `set_key`, `script` |
-| Sink      | `api`, `kafka` |
+| Sink      | `api`, `file`, `kafka` |
 
 Each role has its own namespace, so `"kafka"` is both a source and a sink without collision.
 
@@ -18,7 +18,7 @@ Each role has its own namespace, so `"kafka"` is both a source and a sink withou
 
 - **[Sources](sources.md)** — `api_poll`, `kafka`.
 - **[Transforms](transforms.md)** — `set_key`, `script` (Rhai / Lua / Python).
-- **[Sinks](sinks.md)** — `api`, `kafka`, plus the `ManagedSink` retry/dead-letter wrapper.
+- **[Sinks](sinks.md)** — `api`, `file`, `kafka`, plus the `ManagedSink` retry/dead-letter wrapper.
 
 ## Adding your own
 

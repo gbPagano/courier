@@ -28,6 +28,39 @@ timeout_secs = 30          # optional
 
 Any non-2xx response, network error, or timeout is reported as a sink failure and flows through the configured [`on_error`](../configuration/error-handling.md) and [retry](../configuration/error-handling.md#retry-on-sinks) policies. The response body, when present on a failure, is included in the error message so it surfaces in logs and dead-letter entries.
 
+## `file`
+
+Appends each envelope to a local file as a single line of JSON or a single CSV row. Useful for local development, debugging, audits, and lightweight ETL.
+
+```toml
+[[pipelines.sinks]]
+type = "file"
+path = "./out/users.jsonl"
+format = "jsonl"   # default
+body = "payload"   # default — only meaningful for jsonl
+```
+
+```toml
+[[pipelines.sinks]]
+type = "file"
+path = "./out/users.csv"
+format = "csv"
+columns = ["payload.id", "payload.name", "meta.source_id"]
+```
+
+| Field     | Required        | Default     | Description |
+| --------- | --------------- | ----------- | ----------- |
+| `path`    | yes             | —           | Output file path. Parent directories are created automatically. |
+| `format`  | no              | `"jsonl"`   | `"jsonl"` or `"csv"`. |
+| `body`    | no (jsonl only) | `"payload"` | `"payload"` writes only `env.payload`; `"envelope"` writes the full envelope (`{ "meta": …, "payload": … }`). Ignored for CSV. |
+| `columns` | yes for csv     | `[]`        | Dotted paths evaluated against the full envelope (`payload.id`, `meta.source_id`, `meta.headers.priority`, …). Required when `format = "csv"`. |
+
+The file is opened in **append mode** and flushed after every write, so a restart resumes cleanly without truncating prior output. For CSV the header row is written only when the file is empty at open time — a restart against an existing file emits more rows but no extra header.
+
+CSV cells follow RFC 4180: fields containing `,`, `"`, `\n`, or `\r` are quoted, and embedded `"` characters are doubled. Missing columns render as empty cells; nested objects and arrays are JSON-encoded so they remain machine-readable.
+
+Streaming writes are not transactional. A retried write after a partial I/O failure may produce a duplicate row — the same trade-off that applies to every `WriteOne`-based sink.
+
 ## `kafka`
 
 Produces records to a Kafka topic via `rdkafka`.

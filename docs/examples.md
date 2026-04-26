@@ -105,6 +105,49 @@ headers = { Authorization = "Bearer ${API_TOKEN}" }
 
 Set `body = "envelope"` if the receiver also needs `meta`. Non-2xx responses become sink errors and flow through the configured `on_error` and `retry` policies — the [retry/dead-letter recipe](#sink-with-retry-and-dead-letter) below applies unchanged.
 
+## API → local JSONL file
+
+Persist polled events to a local file, one JSON object per line. Handy for debugging, exports, and replay.
+
+```toml
+[[pipelines]]
+name = "api->jsonl"
+
+[pipelines.source]
+type = "api_poll"
+url = "https://jsonplaceholder.typicode.com/posts/1"
+interval_secs = 5
+
+[[pipelines.sinks]]
+type = "file"
+path = "./out/posts.jsonl"
+format = "jsonl"
+```
+
+Set `body = "envelope"` to also persist `meta` (key, source_id, timestamp, headers) alongside the payload.
+
+## API → local CSV file
+
+Project a few fields out of each envelope into a tabular CSV, with the header written automatically on first run.
+
+```toml
+[[pipelines]]
+name = "api->csv"
+
+[pipelines.source]
+type = "api_poll"
+url = "https://jsonplaceholder.typicode.com/users"
+interval_secs = 30
+
+[[pipelines.sinks]]
+type = "file"
+path = "./out/users.csv"
+format = "csv"
+columns = ["payload.id", "payload.name", "payload.email", "meta.source_id"]
+```
+
+Columns are dotted paths into the full envelope, so you can mix `payload.*` and `meta.*` freely. Restarting against an existing file appends more rows without re-emitting the header.
+
 ## Fan-out to multiple sinks
 
 When you list more than one sink, Courier inserts an implicit broadcast splitter that clones each envelope to every sink. The splitter is synchronous per sink — see [Backpressure](concepts/backpressure.md).

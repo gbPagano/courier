@@ -57,7 +57,7 @@ Plugin model:
 
 - Sources: `api_poll` (`ApiPollSource`), `kafka` (`KafkaSource`)
 - Transforms: `set_key` (`SetKeyTransform`, sets `meta.key` from a payload field), `script` (Rhai runtime; set `script` inline or `script_file` to load from disk, not both)
-- Sinks: `kafka` (`KafkaSink`, exposed through `ManagedSink`), `api` (`ApiSink`, HTTP push exposed through `ManagedSink`; `body = "payload"` sends `env.payload` as JSON, `body = "envelope"` sends the full envelope)
+- Sinks: `kafka` (`KafkaSink`, exposed through `ManagedSink`), `api` (`ApiSink`, HTTP push exposed through `ManagedSink`; `body = "payload"` sends `env.payload` as JSON, `body = "envelope"` sends the full envelope), `file` (`FileSink`, append-mode local file in `jsonl` or `csv` format; CSV columns are dotted paths into the envelope, e.g. `payload.id`, `meta.source_id`)
 
 ### Runtime
 
