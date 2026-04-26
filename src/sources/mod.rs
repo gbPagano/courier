@@ -7,6 +7,7 @@ use crate::envelope::Envelope;
 pub mod api;
 pub mod http_webhook;
 pub mod kafka;
+mod retry;
 pub mod sql;
 
 /// A pipeline source.

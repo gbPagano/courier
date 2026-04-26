@@ -58,6 +58,7 @@ async fn pipeline_receives_http_post_as_envelope() {
                         "bind": bind.to_string(),
                         "path": "/webhooks/events",
                     }),
+                    retry: None,
                 },
                 transforms: vec![],
                 sinks: vec![SinkSpec {
@@ -117,6 +118,7 @@ async fn invalid_webhook_requests_return_client_errors() {
                         "bind": bind.to_string(),
                         "path": "/webhooks/events",
                     }),
+                    retry: None,
                 },
                 transforms: vec![],
                 sinks: vec![SinkSpec {
@@ -178,6 +180,7 @@ fn parse_config_reports_invalid_webhook_config() {
                 "bind": "127.0.0.1:8080",
                 "path": "webhooks/events",
             }),
+            retry: None,
         },
     ) {
         Ok(_) => panic!("expected invalid path error"),

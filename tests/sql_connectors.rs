@@ -220,6 +220,7 @@ fn sql_source_rejects_driver_dsn_mismatch() {
             "query": "SELECT 1",
             "poll_interval_secs": 1
         }),
+        None,
     ) {
         Ok(_) => panic!("expected driver/dsn mismatch error"),
         Err(err) => err,

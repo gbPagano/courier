@@ -34,7 +34,11 @@ struct VecSourceSpec {
     items: Vec<Value>,
 }
 
-fn vec_source_factory(id: &str, config: Value) -> Result<Box<dyn Source>> {
+fn vec_source_factory(
+    id: &str,
+    config: Value,
+    _retry: Option<courier::retry::RetryPolicy>,
+) -> Result<Box<dyn Source>> {
     let spec: VecSourceSpec = serde_json::from_value(config)?;
     let envs = spec
         .items
@@ -71,6 +75,7 @@ async fn pipeline_posts_payload_via_api_sink() {
                     config: json!({
                         "items": [{ "user_id": "alice", "v": 1 }],
                     }),
+                    retry: None,
                 },
                 transforms: vec![],
                 sinks: vec![SinkSpec {
@@ -114,6 +119,7 @@ async fn api_sink_sends_full_envelope_when_configured() {
                 source: SourceSpec {
                     kind: "vec".into(),
                     config: json!({ "items": [{ "id": 7 }] }),
+                    retry: None,
                 },
                 transforms: vec![],
                 sinks: vec![SinkSpec {
@@ -153,6 +159,7 @@ async fn api_sink_forwards_custom_headers_and_method() {
                 source: SourceSpec {
                     kind: "vec".into(),
                     config: json!({ "items": [{ "name": "widget" }] }),
+                    retry: None,
                 },
                 transforms: vec![],
                 sinks: vec![SinkSpec {
@@ -202,6 +209,7 @@ async fn api_sink_retries_then_succeeds_on_5xx() {
                 source: SourceSpec {
                     kind: "vec".into(),
                     config: json!({ "items": [{ "n": 1 }] }),
+                    retry: None,
                 },
                 transforms: vec![],
                 sinks: vec![SinkSpec {
@@ -246,6 +254,7 @@ async fn api_sink_dead_letters_after_retry_exhaustion() {
                 source: SourceSpec {
                     kind: "vec".into(),
                     config: json!({ "items": [{ "id": "abc" }] }),
+                    retry: None,
                 },
                 transforms: vec![],
                 sinks: vec![SinkSpec {
@@ -314,6 +323,7 @@ async fn api_sink_drop_policy_continues_after_failure() {
                 source: SourceSpec {
                     kind: "vec".into(),
                     config: json!({ "items": [{ "n": 1 }, { "n": 2 }] }),
+                    retry: None,
                 },
                 transforms: vec![],
                 sinks: vec![SinkSpec {
@@ -359,6 +369,7 @@ async fn api_sink_writes_through_a_transform() {
                 source: SourceSpec {
                     kind: "vec".into(),
                     config: json!({ "items": [{ "value": 1 }] }),
+                    retry: None,
                 },
                 transforms: vec![courier::config::TransformSpec {
                     kind: "script".into(),

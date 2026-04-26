@@ -10,15 +10,22 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::parse_config;
 use crate::envelope::Envelope;
+use crate::retry::RetryPolicy;
 use crate::sources::Source;
+use crate::sources::retry::PollScheduler;
 
 /// Polls an HTTP endpoint at a fixed interval, emitting each JSON response
 /// body as the envelope payload. Logs a warning when an iteration exceeds
 /// the configured interval.
+///
+/// When `retry` is configured, consecutive fetch failures schedule the
+/// next attempt sooner than the normal cadence — see `PollScheduler` for
+/// the exact rule.
 pub struct ApiPollSource {
     id: String,
     url: String,
     interval: Duration,
+    retry: Option<RetryPolicy>,
 }
 
 impl ApiPollSource {
@@ -27,7 +34,13 @@ impl ApiPollSource {
             id: id.into(),
             url: url.into(),
             interval: poll_interval,
+            retry: None,
         }
+    }
+
+    pub fn with_retry(mut self, retry: RetryPolicy) -> Self {
+        self.retry = Some(retry);
+        self
     }
 }
 
@@ -38,6 +51,7 @@ impl Source for ApiPollSource {
     }
 
     async fn run(self: Box<Self>, tx: Sender<Envelope>, cancel: CancellationToken) {
+        let mut scheduler = PollScheduler::new(self.interval, self.retry.clone());
         let mut ticker = interval(self.interval);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
         ticker.tick().await; // first tick completes immediately
@@ -55,14 +69,29 @@ impl Source for ApiPollSource {
                 result = fetch(&self.url) => match result {
                     Ok(v) => v,
                     Err(e) => {
-                        log::error!("[{}] fetch failed: {e}", self.id);
-                        self.wait_next(&mut ticker, &cancel).await;
-                        if cancel.is_cancelled() { return; }
+                        let delay = scheduler.record_failure();
+                        log::error!(
+                            "[{}] fetch failed (consecutive failures: {}), next attempt in {:?}: {e}",
+                            self.id,
+                            scheduler.consecutive_failures(),
+                            delay,
+                        );
+                        // Backoff bypasses the ticker. If the retry finishes
+                        // before the original deadline, the next tick.tick()
+                        // still blocks until that deadline — original cadence
+                        // preserved. If the deadline has already passed,
+                        // MissedTickBehavior::Delay schedules the next tick
+                        // `interval` from now, so we don't burst-catch-up.
+                        tokio::select! {
+                            _ = cancel.cancelled() => return,
+                            _ = tokio::time::sleep(delay) => {}
+                        }
                         continue;
                     }
                 },
             };
 
+            scheduler.record_success();
             log::debug!("[{}] fetch completed in {:?}", self.id, start.elapsed());
 
             let env = Envelope::new(&self.id, payload);
@@ -86,19 +115,10 @@ impl Source for ApiPollSource {
                 );
             }
 
-            self.wait_next(&mut ticker, &cancel).await;
-            if cancel.is_cancelled() {
-                return;
+            tokio::select! {
+                _ = cancel.cancelled() => return,
+                _ = ticker.tick() => {}
             }
-        }
-    }
-}
-
-impl ApiPollSource {
-    async fn wait_next(&self, ticker: &mut tokio::time::Interval, cancel: &CancellationToken) {
-        tokio::select! {
-            _ = cancel.cancelled() => {}
-            _ = ticker.tick() => {}
         }
     }
 }
@@ -118,8 +138,14 @@ struct ApiPollSourceConfig {
 }
 
 /// Registry factory for [`ApiPollSource`]. Registered by
-/// `courier::registry::register_builtin` under kind `"api_poll"`.
-pub fn api_poll_source_factory(id: &str, config: Value) -> Result<Box<dyn Source>> {
+/// `courier::registry::register_builtin` under kind `"api_poll"`. The
+/// optional `retry` policy is extracted by the registry and threaded into
+/// the source's `PollScheduler`.
+pub fn api_poll_source_factory(
+    id: &str,
+    config: Value,
+    retry: Option<RetryPolicy>,
+) -> Result<Box<dyn Source>> {
     let config: ApiPollSourceConfig = parse_config("api_poll", config)?;
     reqwest::Url::parse(&config.url).with_context(|| {
         format!(
@@ -130,11 +156,11 @@ pub fn api_poll_source_factory(id: &str, config: Value) -> Result<Box<dyn Source
     if config.interval_secs == 0 {
         bail!("invalid config for component type 'api_poll': interval_secs must be greater than 0");
     }
-    Ok(Box::new(ApiPollSource::new(
-        id,
-        config.url,
-        Duration::from_secs(config.interval_secs),
-    )))
+    let mut source = ApiPollSource::new(id, config.url, Duration::from_secs(config.interval_secs));
+    if let Some(policy) = retry {
+        source = source.with_retry(policy);
+    }
+    Ok(Box::new(source))
 }
 
 #[cfg(test)]
@@ -153,6 +179,7 @@ mod tests {
                 "url": "not a url",
                 "interval_secs": 60
             }),
+            None,
         )
         .err()
         .expect("expected invalid URL to fail");
@@ -172,6 +199,7 @@ mod tests {
                 "url": "http://localhost/data",
                 "interval_secs": 0
             }),
+            None,
         )
         .err()
         .expect("expected zero interval to fail");
@@ -240,6 +268,112 @@ mod tests {
             .expect("poll timed out after retry")
             .expect("source closed before emitting");
         assert_eq!(env.payload, json!({ "ok": true }));
+
+        cancel.cancel();
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+    }
+
+    #[tokio::test]
+    async fn retry_backoff_recovers_faster_than_polling_interval() {
+        use crate::retry::{ExhaustedPolicy, RetryPolicy};
+        use std::time::Instant;
+
+        // Interval is 5s — without retry, recovery from a transient 500 would
+        // wait the full 5s. With retry (initial 20ms < interval), the next
+        // attempt fires far sooner. This is the whole point of the policy:
+        // retry can compress the cadence below interval to recover quickly.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/data"))
+            .respond_with(ResponseTemplate::new(500))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/data"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "ok": true })))
+            .mount(&server)
+            .await;
+
+        let url = format!("{}/data", server.uri());
+        let source =
+            ApiPollSource::new("api", url, Duration::from_secs(5)).with_retry(RetryPolicy {
+                max_attempts: 5,
+                initial_delay_ms: 20,
+                backoff_multiplier: 2.0,
+                max_delay_ms: 1_000,
+                on_exhausted: ExhaustedPolicy::Propagate,
+            });
+        let (tx, mut rx) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+
+        let c = cancel.clone();
+        let started = Instant::now();
+        let handle = tokio::spawn(async move { Box::new(source).run(tx, c).await });
+
+        let env = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("poll timed out — retry did not compress the cadence")
+            .expect("source closed before emitting");
+        assert_eq!(env.payload, json!({ "ok": true }));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "recovery took {:?}, retry should have fired well under interval (5s)",
+            started.elapsed(),
+        );
+
+        cancel.cancel();
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+    }
+
+    #[tokio::test]
+    async fn retry_is_disregarded_when_polling_interval_is_smaller() {
+        use crate::retry::{ExhaustedPolicy, RetryPolicy};
+        use std::time::Instant;
+
+        // Interval (50ms) is shorter than initial backoff (5s). The policy
+        // says: when interval < retry, disregard retry — i.e. the next
+        // attempt fires at the polling cadence, not after the longer
+        // backoff. Recovery completes well under the backoff window.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/data"))
+            .respond_with(ResponseTemplate::new(500))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/data"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "ok": true })))
+            .mount(&server)
+            .await;
+
+        let url = format!("{}/data", server.uri());
+        let source =
+            ApiPollSource::new("api", url, Duration::from_millis(50)).with_retry(RetryPolicy {
+                max_attempts: 5,
+                initial_delay_ms: 5_000,
+                backoff_multiplier: 2.0,
+                max_delay_ms: 30_000,
+                on_exhausted: ExhaustedPolicy::Propagate,
+            });
+        let (tx, mut rx) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+
+        let c = cancel.clone();
+        let started = Instant::now();
+        let handle = tokio::spawn(async move { Box::new(source).run(tx, c).await });
+
+        let env = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("poll timed out — interval should override the larger backoff")
+            .expect("source closed before emitting");
+        assert_eq!(env.payload, json!({ "ok": true }));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "recovery took {:?}, interval should have overridden the 5s backoff",
+            started.elapsed(),
+        );
 
         cancel.cancel();
         let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;

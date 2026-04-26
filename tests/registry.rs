@@ -33,7 +33,11 @@ struct VecSourceSpec {
     items: Vec<Value>,
 }
 
-fn vec_source_factory(id: &str, config: Value) -> Result<Box<dyn Source>> {
+fn vec_source_factory(
+    id: &str,
+    config: Value,
+    _retry: Option<courier::retry::RetryPolicy>,
+) -> Result<Box<dyn Source>> {
     let spec: VecSourceSpec = serde_json::from_value(config)?;
     let envs = spec
         .items
@@ -122,6 +126,7 @@ async fn end_to_end_pipeline_built_through_registry() {
                             { "user_id": "b", "v": 2 },
                         ],
                     }),
+                    retry: None,
                 },
                 transforms: vec![TransformSpec {
                     kind: "set_key".into(),
@@ -170,6 +175,7 @@ async fn built_in_script_transform_runs_through_registry() {
                     config: json!({
                         "items": [{ "value": 1 }],
                     }),
+                    retry: None,
                 },
                 transforms: vec![TransformSpec {
                     kind: "script".into(),
@@ -224,6 +230,7 @@ async fn built_in_lua_script_transform_runs_through_registry() {
                     config: json!({
                         "items": [{ "value": 1 }],
                     }),
+                    retry: None,
                 },
                 transforms: vec![TransformSpec {
                     kind: "script".into(),
@@ -278,6 +285,7 @@ async fn built_in_python_script_transform_runs_through_registry() {
                     config: json!({
                         "items": [{ "value": 1 }],
                     }),
+                                    retry: None,
                 },
                 transforms: vec![TransformSpec {
                     kind: "script".into(),
@@ -327,6 +335,7 @@ async fn built_in_python_script_transform_supports_custom_entrypoint() {
                     config: json!({
                         "items": [{ "value": 1 }],
                     }),
+                                    retry: None,
                 },
                 transforms: vec![TransformSpec {
                     kind: "script".into(),
@@ -377,6 +386,7 @@ async fn built_in_script_transform_requires_runtime() {
                     config: json!({
                         "items": [{ "value": 1 }],
                     }),
+                    retry: None,
                 },
                 transforms: vec![TransformSpec {
                     kind: "script".into(),
@@ -425,6 +435,7 @@ async fn built_in_lua_script_transform_rejects_rhai_limits() {
                     config: json!({
                         "items": [{ "value": 1 }],
                     }),
+                    retry: None,
                 },
                 transforms: vec![TransformSpec {
                     kind: "script".into(),
@@ -471,6 +482,7 @@ async fn built_in_python_script_transform_rejects_rhai_limits() {
                     config: json!({
                         "items": [{ "value": 1 }],
                     }),
+                    retry: None,
                 },
                 transforms: vec![TransformSpec {
                     kind: "script".into(),
@@ -522,6 +534,7 @@ async fn registry_fan_out_to_multiple_sinks() {
                     config: json!({
                         "items": [{ "i": 0 }, { "i": 1 }, { "i": 2 }],
                     }),
+                    retry: None,
                 },
                 transforms: vec![],
                 sinks: vec![

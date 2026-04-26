@@ -10,6 +10,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::parse_config;
 use crate::envelope::Envelope;
+use crate::retry::RetryPolicy;
 use crate::sources::Source;
 
 /// Kafka consumer source. Deserializes each record's payload as JSON and
@@ -135,7 +136,19 @@ struct KafkaSourceConfig {
 
 /// Registry factory for [`KafkaSource`]. Registered by
 /// `courier::registry::register_builtin` under kind `"kafka"`.
-pub fn kafka_source_factory(id: &str, config: Value) -> Result<Box<dyn Source>> {
+///
+/// `retry` is rejected at config time: kafka consumers are push-based
+/// (the broker drives delivery), so a retry/backoff knob has no role here.
+pub fn kafka_source_factory(
+    id: &str,
+    config: Value,
+    retry: Option<RetryPolicy>,
+) -> Result<Box<dyn Source>> {
+    if retry.is_some() {
+        bail!(
+            "invalid config for component type 'kafka': retry has no effect on push-based sources"
+        );
+    }
     let config: KafkaSourceConfig = parse_config("kafka", config)?;
     if config.brokers.trim().is_empty() {
         bail!("invalid config for component type 'kafka': brokers must not be empty");
@@ -182,11 +195,40 @@ mod tests {
                 "group_id": "courier",
                 "topics": []
             }),
+            None,
         )
         .err()
         .expect("expected empty topics to fail");
         let msg = format!("{err:#}");
         assert!(msg.contains("topics must not be empty"), "{msg}");
+    }
+
+    #[test]
+    fn factory_rejects_retry_policy() {
+        use crate::retry::{ExhaustedPolicy, RetryPolicy};
+
+        let err = kafka_source_factory(
+            "kafka",
+            serde_json::json!({
+                "brokers": "localhost:9092",
+                "group_id": "courier",
+                "topics": ["t"]
+            }),
+            Some(RetryPolicy {
+                max_attempts: 3,
+                initial_delay_ms: 100,
+                backoff_multiplier: 2.0,
+                max_delay_ms: 1000,
+                on_exhausted: ExhaustedPolicy::Propagate,
+            }),
+        )
+        .err()
+        .expect("expected retry rejection");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("retry has no effect on push-based sources"),
+            "{msg}"
+        );
     }
 
     #[tokio::test]

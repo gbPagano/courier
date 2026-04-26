@@ -23,7 +23,11 @@ struct VecSourceSpec {
     items: Vec<Value>,
 }
 
-fn vec_source_factory(id: &str, config: Value) -> Result<Box<dyn Source>> {
+fn vec_source_factory(
+    id: &str,
+    config: Value,
+    _retry: Option<courier::retry::RetryPolicy>,
+) -> Result<Box<dyn Source>> {
     let spec: VecSourceSpec = serde_json::from_value(config)?;
     let envs = spec
         .items
@@ -57,6 +61,7 @@ async fn pipeline_writes_jsonl_to_disk() {
                             { "id": 2, "name": "bob" },
                         ],
                     }),
+                    retry: None,
                 },
                 transforms: vec![],
                 sinks: vec![SinkSpec {
@@ -102,6 +107,7 @@ async fn pipeline_writes_csv_with_header_then_rows() {
                             { "id": 2, "name": "bob, with comma" },
                         ],
                     }),
+                    retry: None,
                 },
                 transforms: vec![],
                 sinks: vec![SinkSpec {
@@ -146,6 +152,7 @@ async fn jsonl_envelope_mode_persists_meta_through_pipeline() {
                 source: SourceSpec {
                     kind: "vec".into(),
                     config: json!({ "items": [{ "v": 1 }] }),
+                    retry: None,
                 },
                 transforms: vec![],
                 sinks: vec![SinkSpec {

@@ -28,18 +28,26 @@ use crate::sinks::Sink;
 use crate::sources::Source;
 use crate::transforms::Transform;
 
-/// Builds a `Box<dyn Source>` from a JSON spec. Any closure with the same
-/// signature implements this trait via the blanket impl below.
+/// Builds a `Box<dyn Source>` from a JSON spec. Polling sources receive an
+/// optional `RetryPolicy` extracted from `SourceSpec`; push-based sources
+/// (kafka, http_webhook) reject it at factory time so users don't think
+/// retry is doing something it isn't.
 pub trait SourceFactory: Send + Sync {
-    fn build(&self, id: &str, config: Value) -> Result<Box<dyn Source>>;
+    fn build(&self, id: &str, config: Value, retry: Option<RetryPolicy>)
+    -> Result<Box<dyn Source>>;
 }
 
 impl<F> SourceFactory for F
 where
-    F: Fn(&str, Value) -> Result<Box<dyn Source>> + Send + Sync,
+    F: Fn(&str, Value, Option<RetryPolicy>) -> Result<Box<dyn Source>> + Send + Sync,
 {
-    fn build(&self, id: &str, config: Value) -> Result<Box<dyn Source>> {
-        (self)(id, config)
+    fn build(
+        &self,
+        id: &str,
+        config: Value,
+        retry: Option<RetryPolicy>,
+    ) -> Result<Box<dyn Source>> {
+        (self)(id, config, retry)
     }
 }
 
@@ -149,12 +157,13 @@ impl Registry {
 
     pub fn build_source(&self, id: &str, spec: SourceSpec) -> Result<Box<dyn Source>> {
         let kind = spec.kind;
+        let retry = spec.retry;
         let factory = self
             .source_factories
             .get(&kind)
             .with_context(|| format!("unknown source type '{kind}'"))?;
         factory
-            .build(id, spec.config)
+            .build(id, spec.config, retry)
             .with_context(|| format!("failed to build source '{kind}'"))
     }
 
@@ -332,7 +341,7 @@ mod tests {
         async fn run(self: Box<Self>, _rx: Receiver<Envelope>, _cancel: CancellationToken) {}
     }
 
-    fn noop_source(id: &str, _: Value) -> Result<Box<dyn Source>> {
+    fn noop_source(id: &str, _: Value, _: Option<RetryPolicy>) -> Result<Box<dyn Source>> {
         Ok(Box::new(NoopSource(id.to_string())))
     }
 
@@ -363,6 +372,7 @@ mod tests {
         SourceSpec {
             kind: "noop".into(),
             config: json!({}),
+            retry: None,
         }
     }
 
@@ -484,6 +494,7 @@ mod tests {
         SourceSpec {
             kind: kind.into(),
             config: json!({}),
+            retry: None,
         }
     }
 
@@ -547,7 +558,7 @@ mod tests {
         let mut registry = Registry::default();
         let rec = recorded.clone();
         registry
-            .register_source("rec", move |id: &str, _: Value| {
+            .register_source("rec", move |id: &str, _: Value, _: Option<RetryPolicy>| {
                 rec.lock().unwrap().push(id.to_string());
                 Ok(Box::new(NoopSource(id.into())) as Box<dyn Source>)
             })
@@ -577,6 +588,7 @@ mod tests {
                     source: SourceSpec {
                         kind: "rec".into(),
                         config: json!({}),
+                        retry: None,
                     },
                     transforms: vec![
                         TransformSpec {
@@ -626,7 +638,9 @@ mod tests {
     fn build_courier_wraps_component_errors_with_pipeline_name() {
         let mut registry = Registry::default();
         registry
-            .register_source("boom", |_: &str, _: Value| Err(anyhow!("source blew up")))
+            .register_source("boom", |_: &str, _: Value, _: Option<RetryPolicy>| {
+                Err(anyhow!("source blew up"))
+            })
             .unwrap();
         registry.register_sink("noop", noop_sink).unwrap();
 
@@ -637,6 +651,7 @@ mod tests {
                     source: SourceSpec {
                         kind: "boom".into(),
                         config: json!({}),
+                        retry: None,
                     },
                     transforms: vec![],
                     sinks: vec![noop_sink_spec(None)],

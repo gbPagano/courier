@@ -231,7 +231,7 @@ async fn script_transform_end_to_end() {
     let capture = CollectingSink::new("dst");
     let store = capture.handle();
     registry
-        .register_source("vec", |id: &str, _| {
+        .register_source("vec", |id: &str, _, _| {
             Ok(Box::new(VecSource::new(
                 id,
                 vec![Envelope::new(id, json!({ "value": 1 }))],
@@ -254,6 +254,7 @@ async fn script_transform_end_to_end() {
                 source: SourceSpec {
                     kind: "vec".into(),
                     config: json!({}),
+                    retry: None,
                 },
                 transforms: vec![TransformSpec {
                     kind: "script".into(),
@@ -296,7 +297,7 @@ async fn script_transform_filters_with_unit() {
     let capture = CollectingSink::new("dst");
     let store = capture.handle();
     registry
-        .register_source("vec", |id: &str, _| {
+        .register_source("vec", |id: &str, _, _| {
             Ok(Box::new(VecSource::new(
                 id,
                 vec![Envelope::new(id, json!({ "skip": true }))],
@@ -319,6 +320,7 @@ async fn script_transform_filters_with_unit() {
                 source: SourceSpec {
                     kind: "vec".into(),
                     config: json!({}),
+                    retry: None,
                 },
                 transforms: vec![TransformSpec {
                     kind: "script".into(),
@@ -353,7 +355,7 @@ async fn script_transform_drop_policy_continues_after_error() {
     let capture = CollectingSink::new("dst");
     let store = capture.handle();
     registry
-        .register_source("vec", |id: &str, _| {
+        .register_source("vec", |id: &str, _, _| {
             Ok(Box::new(VecSource::new(
                 id,
                 vec![
@@ -379,6 +381,7 @@ async fn script_transform_drop_policy_continues_after_error() {
                 source: SourceSpec {
                     kind: "vec".into(),
                     config: json!({}),
+                    retry: None,
                 },
                 transforms: vec![TransformSpec {
                     kind: "script".into(),
@@ -427,7 +430,7 @@ async fn script_transform_fail_pipeline_stops_after_error() {
     let capture = CollectingSink::new("dst");
     let store = capture.handle();
     registry
-        .register_source("vec", |id: &str, _| {
+        .register_source("vec", |id: &str, _, _| {
             Ok(Box::new(VecSource::new(
                 id,
                 vec![
@@ -453,6 +456,7 @@ async fn script_transform_fail_pipeline_stops_after_error() {
                 source: SourceSpec {
                     kind: "vec".into(),
                     config: json!({}),
+                    retry: None,
                 },
                 transforms: vec![TransformSpec {
                     kind: "script".into(),
@@ -495,7 +499,7 @@ async fn lua_script_transform_end_to_end() {
     let capture = CollectingSink::new("dst");
     let store = capture.handle();
     registry
-        .register_source("vec", |id: &str, _| {
+        .register_source("vec", |id: &str, _, _| {
             Ok(Box::new(VecSource::new(
                 id,
                 vec![Envelope::new(id, json!({ "value": 1 }))],
@@ -518,6 +522,7 @@ async fn lua_script_transform_end_to_end() {
                 source: SourceSpec {
                     kind: "vec".into(),
                     config: json!({}),
+                    retry: None,
                 },
                 transforms: vec![TransformSpec {
                     kind: "script".into(),
@@ -560,7 +565,7 @@ async fn lua_script_transform_filters_with_nil() {
     let capture = CollectingSink::new("dst");
     let store = capture.handle();
     registry
-        .register_source("vec", |id: &str, _| {
+        .register_source("vec", |id: &str, _, _| {
             Ok(Box::new(VecSource::new(
                 id,
                 vec![Envelope::new(id, json!({ "skip": true }))],
@@ -583,6 +588,7 @@ async fn lua_script_transform_filters_with_nil() {
                 source: SourceSpec {
                     kind: "vec".into(),
                     config: json!({}),
+                    retry: None,
                 },
                 transforms: vec![TransformSpec {
                     kind: "script".into(),
@@ -617,7 +623,7 @@ async fn python_script_transform_end_to_end() {
     let capture = CollectingSink::new("dst");
     let store = capture.handle();
     registry
-        .register_source("vec", |id: &str, _| {
+        .register_source("vec", |id: &str, _, _| {
             Ok(Box::new(VecSource::new(
                 id,
                 vec![Envelope::new(id, json!({ "value": 1 }))],
@@ -640,6 +646,7 @@ async fn python_script_transform_end_to_end() {
                 source: SourceSpec {
                     kind: "vec".into(),
                     config: json!({}),
+                                    retry: None,
                 },
                 transforms: vec![TransformSpec {
                     kind: "script".into(),
@@ -677,7 +684,7 @@ async fn python_script_transform_filters_with_none() {
     let capture = CollectingSink::new("dst");
     let store = capture.handle();
     registry
-        .register_source("vec", |id: &str, _| {
+        .register_source("vec", |id: &str, _, _| {
             Ok(Box::new(VecSource::new(
                 id,
                 vec![Envelope::new(id, json!({ "skip": true }))],
@@ -700,6 +707,7 @@ async fn python_script_transform_filters_with_none() {
                 source: SourceSpec {
                     kind: "vec".into(),
                     config: json!({}),
+                    retry: None,
                 },
                 transforms: vec![TransformSpec {
                     kind: "script".into(),
@@ -734,7 +742,7 @@ async fn script_transform_chains_rhai_then_python() {
     let capture = CollectingSink::new("dst");
     let store = capture.handle();
     registry
-        .register_source("vec", |id: &str, _| {
+        .register_source("vec", |id: &str, _, _| {
             Ok(Box::new(VecSource::new(
                 id,
                 vec![Envelope::new(id, json!({ "value": 1 }))],
@@ -757,6 +765,7 @@ async fn script_transform_chains_rhai_then_python() {
                 source: SourceSpec {
                     kind: "vec".into(),
                     config: json!({}),
+                                    retry: None,
                 },
                 transforms: vec![
                     TransformSpec {
@@ -812,7 +821,7 @@ async fn script_transform_chains_rhai_then_lua() {
     let capture = CollectingSink::new("dst");
     let store = capture.handle();
     registry
-        .register_source("vec", |id: &str, _| {
+        .register_source("vec", |id: &str, _, _| {
             Ok(Box::new(VecSource::new(
                 id,
                 vec![Envelope::new(id, json!({ "value": 1 }))],
@@ -835,6 +844,7 @@ async fn script_transform_chains_rhai_then_lua() {
                 source: SourceSpec {
                     kind: "vec".into(),
                     config: json!({}),
+                    retry: None,
                 },
                 transforms: vec![
                     TransformSpec {
@@ -896,7 +906,7 @@ async fn python_script_transform_drop_policy_continues_after_error() {
     let capture = CollectingSink::new("dst");
     let store = capture.handle();
     registry
-        .register_source("vec", |id: &str, _| {
+        .register_source("vec", |id: &str, _, _| {
             Ok(Box::new(VecSource::new(
                 id,
                 vec![
@@ -922,6 +932,7 @@ async fn python_script_transform_drop_policy_continues_after_error() {
                 source: SourceSpec {
                     kind: "vec".into(),
                     config: json!({}),
+                                    retry: None,
                 },
                 transforms: vec![TransformSpec {
                     kind: "script".into(),
@@ -962,7 +973,7 @@ async fn python_script_transform_fail_pipeline_stops_after_error() {
     let capture = CollectingSink::new("dst");
     let store = capture.handle();
     registry
-        .register_source("vec", |id: &str, _| {
+        .register_source("vec", |id: &str, _, _| {
             Ok(Box::new(VecSource::new(
                 id,
                 vec![
@@ -988,6 +999,7 @@ async fn python_script_transform_fail_pipeline_stops_after_error() {
                 source: SourceSpec {
                     kind: "vec".into(),
                     config: json!({}),
+                                    retry: None,
                 },
                 transforms: vec![TransformSpec {
                     kind: "script".into(),
@@ -1022,7 +1034,7 @@ async fn lua_script_transform_drop_policy_continues_after_error() {
     let capture = CollectingSink::new("dst");
     let store = capture.handle();
     registry
-        .register_source("vec", |id: &str, _| {
+        .register_source("vec", |id: &str, _, _| {
             Ok(Box::new(VecSource::new(
                 id,
                 vec![
@@ -1048,6 +1060,7 @@ async fn lua_script_transform_drop_policy_continues_after_error() {
                 source: SourceSpec {
                     kind: "vec".into(),
                     config: json!({}),
+                    retry: None,
                 },
                 transforms: vec![TransformSpec {
                     kind: "script".into(),
@@ -1096,7 +1109,7 @@ async fn lua_script_transform_fail_pipeline_stops_after_error() {
     let capture = CollectingSink::new("dst");
     let store = capture.handle();
     registry
-        .register_source("vec", |id: &str, _| {
+        .register_source("vec", |id: &str, _, _| {
             Ok(Box::new(VecSource::new(
                 id,
                 vec![
@@ -1122,6 +1135,7 @@ async fn lua_script_transform_fail_pipeline_stops_after_error() {
                 source: SourceSpec {
                     kind: "vec".into(),
                     config: json!({}),
+                    retry: None,
                 },
                 transforms: vec![TransformSpec {
                     kind: "script".into(),

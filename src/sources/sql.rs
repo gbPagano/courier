@@ -14,19 +14,25 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::parse_config;
 use crate::envelope::Envelope;
+use crate::retry::RetryPolicy;
 use crate::sources::Source;
+use crate::sources::retry::PollScheduler;
 
 /// Polls a SQL query and emits one envelope per returned row.
 ///
 /// This first version is stateless: every poll executes the configured query
 /// as-is. Operators who need incremental behavior should express it in SQL
 /// until Courier has durable checkpoint storage.
+///
+/// When `retry` is configured, consecutive query failures schedule the next
+/// attempt sooner than the normal cadence — see `PollScheduler` for the rule.
 pub struct SqlQueryPollSource {
     id: String,
     driver: SqlDriver,
     dsn: String,
     query: String,
     poll_interval: Duration,
+    retry: Option<RetryPolicy>,
 }
 
 impl SqlQueryPollSource {
@@ -43,7 +49,13 @@ impl SqlQueryPollSource {
             dsn: dsn.into(),
             query: query.into(),
             poll_interval,
+            retry: None,
         }
+    }
+
+    pub fn with_retry(mut self, retry: RetryPolicy) -> Self {
+        self.retry = Some(retry);
+        self
     }
 }
 
@@ -54,6 +66,7 @@ impl Source for SqlQueryPollSource {
     }
 
     async fn run(self: Box<Self>, tx: Sender<Envelope>, cancel: CancellationToken) {
+        let mut scheduler = PollScheduler::new(self.poll_interval, self.retry.clone());
         let mut ticker = interval(self.poll_interval);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
         ticker.tick().await;
@@ -79,13 +92,27 @@ impl Source for SqlQueryPollSource {
                 result = db.fetch_rows(&self.query) => match result {
                     Ok(rows) => rows,
                     Err(e) => {
-                        log::error!("[{}] SQL query failed: {e}", self.id);
-                        wait_next(&mut ticker, &cancel).await;
-                        if cancel.is_cancelled() { return; }
+                        let delay = scheduler.record_failure();
+                        log::error!(
+                            "[{}] SQL query failed (consecutive failures: {}), next attempt in {:?}: {e}",
+                            self.id,
+                            scheduler.consecutive_failures(),
+                            delay,
+                        );
+                        // Backoff bypasses the ticker — sleep an arbitrary
+                        // duration, then reset() so normal cadence resumes
+                        // `interval` after this point.
+                        tokio::select! {
+                            _ = cancel.cancelled() => return,
+                            _ = tokio::time::sleep(delay) => {}
+                        }
+                        ticker.reset();
                         continue;
                     }
                 },
             };
+
+            scheduler.record_success();
 
             for payload in rows {
                 let env = Envelope::new(&self.id, payload);
@@ -110,18 +137,11 @@ impl Source for SqlQueryPollSource {
                 );
             }
 
-            wait_next(&mut ticker, &cancel).await;
-            if cancel.is_cancelled() {
-                return;
+            tokio::select! {
+                _ = cancel.cancelled() => return,
+                _ = ticker.tick() => {}
             }
         }
-    }
-}
-
-async fn wait_next(ticker: &mut tokio::time::Interval, cancel: &CancellationToken) {
-    tokio::select! {
-        _ = cancel.cancelled() => {}
-        _ = ticker.tick() => {}
     }
 }
 
@@ -264,7 +284,13 @@ struct SqlQueryPollSourceConfig {
 
 /// Registry factory for [`SqlQueryPollSource`]. Registered by
 /// `courier::registry::register_builtin` under kind `"sql_query_poll"`.
-pub fn sql_query_poll_source_factory(id: &str, config: Value) -> Result<Box<dyn Source>> {
+/// The optional `retry` policy is extracted by the registry and threaded
+/// into the source's `PollScheduler`.
+pub fn sql_query_poll_source_factory(
+    id: &str,
+    config: Value,
+    retry: Option<RetryPolicy>,
+) -> Result<Box<dyn Source>> {
     let config: SqlQueryPollSourceConfig = parse_config("sql_query_poll", config)?;
     validate_driver_dsn("sql_query_poll", config.driver, &config.dsn)?;
     if config.query.trim().is_empty() {
@@ -278,11 +304,15 @@ pub fn sql_query_poll_source_factory(id: &str, config: Value) -> Result<Box<dyn 
         ));
     }
 
-    Ok(Box::new(SqlQueryPollSource::new(
+    let mut source = SqlQueryPollSource::new(
         id,
         config.driver,
         config.dsn,
         config.query,
         Duration::from_secs(config.poll_interval_secs),
-    )))
+    );
+    if let Some(policy) = retry {
+        source = source.with_retry(policy);
+    }
+    Ok(Box::new(source))
 }

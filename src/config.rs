@@ -87,6 +87,10 @@ impl Config {
                 bail!("{pipeline_label}.source.type: source type must not be empty");
             }
 
+            if let Some(retry) = &pipeline.source.retry {
+                validate_retry_policy(retry, &format!("{pipeline_label}.source.retry"))?;
+            }
+
             if matches!(pipeline.channel_capacity, Some(0)) {
                 bail!("{pipeline_label}.channel_capacity: must be greater than 0");
             }
@@ -246,6 +250,9 @@ pub struct PipelineSpec {
 pub struct SourceSpec {
     pub kind: String,
     pub config: Value,
+    /// Retry/backoff policy. Polling sources thread this into their
+    /// `PollScheduler`; push-based sources reject it at factory time.
+    pub retry: Option<RetryPolicy>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -305,9 +312,17 @@ struct RawConfig {
 #[derive(Debug, Default, Deserialize)]
 struct RawDefaults {
     #[serde(default)]
+    source: RawSourceDefaults,
+    #[serde(default)]
     sink: RawSinkDefaults,
     #[serde(default)]
     transform: RawTransformDefaults,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawSourceDefaults {
+    #[serde(default)]
+    retry: Option<RetryPolicy>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -340,6 +355,8 @@ struct RawPipelineConfig {
 struct RawSourceConfig {
     #[serde(rename = "type")]
     kind: String,
+    #[serde(default)]
+    retry: Option<RetryPolicy>,
     #[serde(flatten)]
     config: JsonMap<String, Value>,
 }
@@ -389,7 +406,7 @@ impl From<RawConfig> for Config {
 fn pipeline_from_raw(value: RawPipelineConfig, defaults: &RawDefaults) -> PipelineSpec {
     PipelineSpec {
         name: value.name,
-        source: value.source.into(),
+        source: source_from_raw(value.source, &defaults.source),
         transforms: value
             .transforms
             .into_iter()
@@ -404,12 +421,11 @@ fn pipeline_from_raw(value: RawPipelineConfig, defaults: &RawDefaults) -> Pipeli
     }
 }
 
-impl From<RawSourceConfig> for SourceSpec {
-    fn from(value: RawSourceConfig) -> Self {
-        Self {
-            kind: value.kind,
-            config: Value::Object(value.config),
-        }
+fn source_from_raw(value: RawSourceConfig, defaults: &RawSourceDefaults) -> SourceSpec {
+    SourceSpec {
+        kind: value.kind,
+        config: Value::Object(value.config),
+        retry: value.retry.or_else(|| defaults.retry.clone()),
     }
 }
 
@@ -1210,6 +1226,136 @@ mod tests {
         let msg = format!("{:#}", config.validate().unwrap_err());
         assert!(msg.contains("pipeline 'p'.sinks"), "{msg}");
         assert!(msg.contains("at least one sink is required"), "{msg}");
+    }
+
+    #[test]
+    fn parses_source_retry_policy() {
+        let config = Config::from_toml_str(
+            r#"
+            [[pipelines]]
+            name = "p"
+
+            [pipelines.source]
+            type = "api_poll"
+            url = "https://example.test/data"
+            interval_secs = 30
+
+            [pipelines.source.retry]
+            max_attempts = 5
+            initial_delay_ms = 200
+            backoff_multiplier = 2.0
+            max_delay_ms = 5000
+            on_exhausted = { kind = "propagate" }
+
+            [[pipelines.sinks]]
+            type = "noop"
+            "#,
+        )
+        .unwrap();
+
+        let source = &config.pipelines[0].source;
+        // retry/on_error keys never leak into the component config bucket.
+        assert_eq!(
+            source.config,
+            json!({ "url": "https://example.test/data", "interval_secs": 30 })
+        );
+        let retry = source.retry.as_ref().expect("source retry should parse");
+        assert_eq!(retry.max_attempts, 5);
+        assert_eq!(retry.initial_delay_ms, 200);
+    }
+
+    #[test]
+    fn source_defaults_apply_when_omitted() {
+        let config = Config::from_toml_str(
+            r#"
+            [defaults.source.retry]
+            max_attempts = 4
+            initial_delay_ms = 50
+            backoff_multiplier = 2.0
+            max_delay_ms = 1000
+            on_exhausted = { kind = "propagate" }
+
+            [[pipelines]]
+            name = "p"
+            [pipelines.source]
+            type = "api_poll"
+
+            [[pipelines.sinks]]
+            type = "noop"
+            "#,
+        )
+        .unwrap();
+
+        let retry = config.pipelines[0]
+            .source
+            .retry
+            .as_ref()
+            .expect("default source retry should apply");
+        assert_eq!(retry.max_attempts, 4);
+    }
+
+    #[test]
+    fn source_component_retry_overrides_default() {
+        let config = Config::from_toml_str(
+            r#"
+            [defaults.source.retry]
+            max_attempts = 9
+            initial_delay_ms = 999
+            backoff_multiplier = 2.0
+            max_delay_ms = 9999
+            on_exhausted = { kind = "propagate" }
+
+            [[pipelines]]
+            name = "p"
+
+            [pipelines.source]
+            type = "api_poll"
+
+            [pipelines.source.retry]
+            max_attempts = 2
+            initial_delay_ms = 1
+            backoff_multiplier = 1.0
+            max_delay_ms = 5
+            on_exhausted = { kind = "propagate" }
+
+            [[pipelines.sinks]]
+            type = "noop"
+            "#,
+        )
+        .unwrap();
+
+        let retry = config.pipelines[0].source.retry.as_ref().unwrap();
+        assert_eq!(retry.max_attempts, 2);
+        assert_eq!(retry.initial_delay_ms, 1);
+    }
+
+    #[test]
+    fn validate_rejects_invalid_source_retry_policy() {
+        let config = Config::from_toml_str(
+            r#"
+            [[pipelines]]
+            name = "p"
+
+            [pipelines.source]
+            type = "api_poll"
+
+            [pipelines.source.retry]
+            max_attempts = 0
+            initial_delay_ms = 1
+            backoff_multiplier = 1.0
+            max_delay_ms = 1
+
+            [[pipelines.sinks]]
+            type = "noop"
+            "#,
+        )
+        .unwrap();
+
+        let msg = format!("{:#}", config.validate().unwrap_err());
+        assert!(
+            msg.contains("pipeline 'p'.source.retry.max_attempts"),
+            "{msg}"
+        );
     }
 
     #[test]

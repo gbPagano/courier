@@ -15,6 +15,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::parse_config;
 use crate::envelope::Envelope;
+use crate::retry::RetryPolicy;
 use crate::sources::Source;
 
 /// Accepts HTTP webhook requests and emits each valid JSON request body as
@@ -136,7 +137,19 @@ struct HttpWebhookSourceConfig {
 
 /// Registry factory for [`HttpWebhookSource`]. Registered by
 /// `courier::registry::register_builtin` under kind `"http_webhook"`.
-pub fn http_webhook_source_factory(id: &str, config: Value) -> Result<Box<dyn Source>> {
+///
+/// `retry` is rejected at config time: webhook is push-based, so there is
+/// nothing to "retry" — the upstream owns the retry decision.
+pub fn http_webhook_source_factory(
+    id: &str,
+    config: Value,
+    retry: Option<RetryPolicy>,
+) -> Result<Box<dyn Source>> {
+    if retry.is_some() {
+        bail!(
+            "invalid config for component type 'http_webhook': retry has no effect on push-based sources"
+        );
+    }
     let config: HttpWebhookSourceConfig = parse_config("http_webhook", config)?;
     let bind = config
         .bind
@@ -291,6 +304,7 @@ mod tests {
                 "bind": "127.0.0.1:8080",
                 "path": "events",
             }),
+            None,
         ) {
             Ok(_) => panic!("expected invalid path error"),
             Err(err) => err,
@@ -307,10 +321,35 @@ mod tests {
                 "bind": "127.0.0.1:8080",
                 "path": "/events",
             }),
+            None,
         )
         .unwrap();
 
         assert_eq!(source.id(), "webhook");
+    }
+
+    #[test]
+    fn factory_rejects_retry_policy() {
+        use crate::retry::{ExhaustedPolicy, RetryPolicy};
+
+        let err = http_webhook_source_factory(
+            "webhook",
+            json!({ "bind": "127.0.0.1:8080", "path": "/events" }),
+            Some(RetryPolicy {
+                max_attempts: 3,
+                initial_delay_ms: 100,
+                backoff_multiplier: 2.0,
+                max_delay_ms: 1000,
+                on_exhausted: ExhaustedPolicy::Propagate,
+            }),
+        )
+        .err()
+        .expect("expected retry rejection");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("retry has no effect on push-based sources"),
+            "{msg}"
+        );
     }
 
     fn unused_local_addr() -> SocketAddr {
