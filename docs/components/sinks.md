@@ -89,6 +89,39 @@ kind = "propagate"
 
 `meta.key` is used as the record key; `payload` is serialized as the record value.
 
+## `sql`
+
+Inserts one row per envelope into a SQL table. The public connector is generic over SQL drivers; this version supports `postgres` and `sqlite`.
+
+```toml
+[[pipelines.sinks]]
+type = "sql"
+driver = "postgres"
+dsn = "postgres://user:pass@localhost/warehouse"
+table = "users_snapshot"
+mode = "insert"
+columns = {
+  id = "payload.id",
+  email = "payload.email",
+  updated_at = "payload.updated_at",
+  source = "meta.source_id"
+}
+```
+
+| Field     | Required | Default    | Description |
+| --------- | -------- | ---------- | ----------- |
+| `driver`  | yes      | —          | `postgres` or `sqlite`. |
+| `dsn`     | yes      | —          | Driver-specific connection string. |
+| `table`   | yes      | —          | Destination table. Simple identifiers and dotted schema-qualified names are supported. |
+| `mode`    | no       | `"insert"` | Write mode. Only `insert` is included in this version. |
+| `columns` | yes      | —          | Map of destination column name to dotted path in the full envelope. |
+
+Column mappings are evaluated against the full envelope, so paths can read from `payload`, `meta.source_id`, `meta.key`, `meta.timestamp_ms`, or `meta.headers.*`. Missing paths are inserted as SQL `NULL`. Scalar JSON values are bound as native booleans, numbers, or strings where possible; arrays and objects are bound as JSON for Postgres and JSON strings for SQLite.
+
+Upsert is not included in this first version. A future API should define conflict columns and update columns explicitly, because the SQL syntax and behavior differ by driver.
+
+This sink implements `WriteOne` and is wrapped in `ManagedSink`, so non-transient database errors, retry, dead-letter, and `on_error` behavior are handled the same way as other built-in sinks.
+
 ## Retry & dead-letter
 
 `on_error` and the `retry` block are extracted by the registry and wired into `ManagedSink` automatically — sink factories never parse those fields themselves. See [Error Handling & Retry](../configuration/error-handling.md) for the full schema.

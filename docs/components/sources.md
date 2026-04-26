@@ -68,6 +68,41 @@ topics = ["topic1"]
 
 Record key (when present) is copied to `meta.key`; Kafka topic, partition, and offset are copied to `meta.headers["kafka.topic"]`, `meta.headers["kafka.partition"]`, and `meta.headers["kafka.offset"]`; the record value is parsed as JSON into `payload`.
 
+## `sql_query_poll`
+
+Polls a SQL query on a fixed interval and emits one envelope per returned row. The public connector is generic over SQL drivers; this version supports `postgres` and `sqlite`.
+
+```toml
+[pipelines.source]
+type = "sql_query_poll"
+driver = "postgres"
+dsn = "postgres://user:pass@localhost/app"
+query = "SELECT id, email, updated_at FROM users ORDER BY updated_at"
+poll_interval_secs = 30
+```
+
+SQLite uses the same shape:
+
+```toml
+[pipelines.source]
+type = "sql_query_poll"
+driver = "sqlite"
+dsn = "sqlite:///var/lib/app.db"
+query = "SELECT id, email FROM users ORDER BY id"
+poll_interval_secs = 30
+```
+
+| Field                | Required | Description |
+| -------------------- | -------- | ----------- |
+| `driver`             | yes      | `postgres` or `sqlite`. |
+| `dsn`                | yes      | Driver-specific connection string. |
+| `query`              | yes      | SQL query to execute every poll. Must not be empty. |
+| `poll_interval_secs` | yes      | Seconds between successive polls. Must be greater than `0`. |
+
+Each returned row becomes an envelope whose `payload` is a JSON object keyed by column name. SQL booleans, integers, floats, JSON, text, and common timestamp types are converted to JSON values. `meta.source_id` is set to the pipeline's source node id and `meta.timestamp_ms` is stamped when the row is emitted.
+
+Polling is stateless in this first version. Courier does not persist checkpoints, does not bind a `$1` watermark, and does not remember the last row across restarts. If you need incremental behavior, put the filtering in your SQL query or query a table/view that already represents the desired window. Durable checkpointing can be added later without changing the basic row-to-envelope mapping.
+
 ## Writing your own source
 
 Implement `Source::run(tx, cancel)` and register a `SourceFactory` against a unique `kind`. See [Architecture](../concepts/architecture.md) and [Contributing](../contributing.md).

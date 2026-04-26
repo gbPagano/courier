@@ -47,6 +47,37 @@ topic = "incoming-events"
 
 Requests must use `POST` on the configured path, and the body must be valid JSON. The raw JSON body becomes `payload`; request headers are copied to `meta.headers` as `http.header.<header-name>`.
 
+## SQL → SQL
+
+Poll rows from Postgres and insert snapshots into SQLite.
+
+```toml
+[[pipelines]]
+name = "users-snapshot"
+
+[pipelines.source]
+type = "sql_query_poll"
+driver = "postgres"
+dsn = "postgres://user:pass@localhost/app"
+query = "SELECT id, email, updated_at FROM users ORDER BY updated_at"
+poll_interval_secs = 30
+
+[[pipelines.sinks]]
+type = "sql"
+driver = "sqlite"
+dsn = "sqlite:///var/lib/warehouse.db"
+table = "users_snapshot"
+mode = "insert"
+columns = {
+  id = "payload.id",
+  email = "payload.email",
+  updated_at = "payload.updated_at",
+  source = "meta.source_id"
+}
+```
+
+The SQL source is stateless in this version: every poll runs the configured query as-is. The SQL sink is insert-only; upsert is intentionally deferred until conflict/update behavior is configured explicitly.
+
 ## API → Kafka, with a partition key
 
 Use the [`set_key`](components/transforms.md#set_key) transform to partition records by a payload field.

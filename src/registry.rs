@@ -249,6 +249,10 @@ pub fn register_builtin(registry: &mut Registry) -> Result<()> {
         crate::sources::http_webhook::http_webhook_source_factory,
     )?;
     registry.register_source("kafka", crate::sources::kafka::kafka_source_factory)?;
+    registry.register_source(
+        "sql_query_poll",
+        crate::sources::sql::sql_query_poll_source_factory,
+    )?;
     registry.register_transform(
         "script",
         crate::transforms::script::script_transform_factory,
@@ -260,6 +264,7 @@ pub fn register_builtin(registry: &mut Registry) -> Result<()> {
     registry.register_sink("api", crate::sinks::api::api_sink_factory)?;
     registry.register_sink("file", crate::sinks::file::file_sink_factory)?;
     registry.register_sink("kafka", crate::sinks::kafka::kafka_sink_factory)?;
+    registry.register_sink("sql", crate::sinks::sql::sql_sink_factory)?;
     Ok(())
 }
 
@@ -482,7 +487,10 @@ mod tests {
 
         let mut sources: Vec<_> = registry.source_kinds().collect();
         sources.sort();
-        assert_eq!(sources, vec!["api_poll", "http_webhook", "kafka"]);
+        assert_eq!(
+            sources,
+            vec!["api_poll", "http_webhook", "kafka", "sql_query_poll"]
+        );
 
         let mut transforms: Vec<_> = registry.transform_kinds().collect();
         transforms.sort();
@@ -490,7 +498,7 @@ mod tests {
 
         let mut sinks: Vec<_> = registry.sink_kinds().collect();
         sinks.sort();
-        assert_eq!(sinks, vec!["api", "file", "kafka"]);
+        assert_eq!(sinks, vec!["api", "file", "kafka", "sql"]);
     }
 
     #[test]

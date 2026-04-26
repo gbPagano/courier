@@ -11,6 +11,7 @@ pub mod api;
 pub mod file;
 pub mod kafka;
 mod retry;
+pub mod sql;
 
 /// Full-control sink: owns the receiver loop.
 ///
