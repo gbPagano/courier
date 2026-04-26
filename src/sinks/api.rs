@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
-use reqwest::{Client, Method};
+use reqwest::{Client, Method, Url};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -127,6 +127,12 @@ pub fn api_sink_factory(
     retry: Option<RetryPolicy>,
 ) -> Result<Box<dyn Sink>> {
     let config: ApiSinkConfig = parse_config("api", config)?;
+    Url::parse(&config.url).with_context(|| {
+        format!(
+            "invalid config for component type 'api': invalid url '{}'",
+            config.url
+        )
+    })?;
 
     let method = match config.method.as_deref() {
         None => Method::POST,
@@ -170,6 +176,26 @@ mod tests {
         body_format: BodyFormat,
     ) -> ApiSink {
         ApiSink::new("api-sink", url, method, headers, body_format, None).unwrap()
+    }
+
+    #[test]
+    fn factory_rejects_invalid_url() {
+        let err = api_sink_factory(
+            "api",
+            json!({
+                "url": "not a url"
+            }),
+            ErrorPolicy::Drop,
+            None,
+        )
+        .err()
+        .expect("expected invalid URL to fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("invalid config for component type 'api'"),
+            "{msg}"
+        );
+        assert!(msg.contains("invalid url"), "{msg}");
     }
 
     #[tokio::test]

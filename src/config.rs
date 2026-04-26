@@ -1,6 +1,7 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value};
@@ -60,6 +61,64 @@ impl Config {
         }
     }
 
+    /// Validate Courier-owned configuration before any component is built
+    /// or runtime task is spawned. Component-owned fields remain in each
+    /// factory's validation path so custom/plugin fields stay extensible.
+    pub fn validate(&self) -> Result<()> {
+        let mut seen_names: HashMap<&str, usize> = HashMap::new();
+
+        for (pipeline_index, pipeline) in self.pipelines.iter().enumerate() {
+            let pipeline_path = format!("pipelines[{pipeline_index}]");
+            let pipeline_label = pipeline_label(pipeline_index, &pipeline.name);
+
+            if pipeline.name.trim().is_empty() {
+                bail!("{pipeline_path}.name: pipeline name must not be empty");
+            }
+
+            if let Some(previous_index) = seen_names.insert(pipeline.name.as_str(), pipeline_index)
+            {
+                bail!(
+                    "{pipeline_path}.name: duplicate pipeline name '{}' (already defined at pipelines[{previous_index}].name)",
+                    pipeline.name
+                );
+            }
+
+            if pipeline.source.kind.trim().is_empty() {
+                bail!("{pipeline_label}.source.type: source type must not be empty");
+            }
+
+            if matches!(pipeline.channel_capacity, Some(0)) {
+                bail!("{pipeline_label}.channel_capacity: must be greater than 0");
+            }
+
+            if pipeline.sinks.is_empty() {
+                bail!("{pipeline_label}.sinks: at least one sink is required");
+            }
+
+            for (transform_index, transform) in pipeline.transforms.iter().enumerate() {
+                if transform.kind.trim().is_empty() {
+                    bail!(
+                        "{pipeline_label}.transforms[{transform_index}].type: transform type must not be empty"
+                    );
+                }
+            }
+
+            for (sink_index, sink) in pipeline.sinks.iter().enumerate() {
+                if sink.kind.trim().is_empty() {
+                    bail!("{pipeline_label}.sinks[{sink_index}].type: sink type must not be empty");
+                }
+                if let Some(retry) = &sink.retry {
+                    validate_retry_policy(
+                        retry,
+                        &format!("{pipeline_label}.sinks[{sink_index}].retry"),
+                    )?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     fn load_file(path: &Path) -> Result<Self> {
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("failed to read config file {}", path.display()))?;
@@ -99,6 +158,62 @@ impl Config {
 
         Ok(merged)
     }
+}
+
+fn pipeline_label(index: usize, name: &str) -> String {
+    if name.trim().is_empty() {
+        format!("pipelines[{index}]")
+    } else {
+        format!("pipeline '{name}'")
+    }
+}
+
+fn validate_retry_policy(policy: &RetryPolicy, path: &str) -> Result<()> {
+    if policy.max_attempts == 0 {
+        bail!("{path}.max_attempts: must be greater than or equal to 1");
+    }
+
+    if policy.max_attempts > 1 {
+        if policy.initial_delay_ms == 0 {
+            bail!("{path}.initial_delay_ms: must be greater than 0 when max_attempts > 1");
+        }
+        if policy.max_delay_ms == 0 {
+            bail!("{path}.max_delay_ms: must be greater than 0 when max_attempts > 1");
+        }
+    }
+
+    if !policy.backoff_multiplier.is_finite() || policy.backoff_multiplier < 1.0 {
+        bail!("{path}.backoff_multiplier: must be finite and greater than or equal to 1.0");
+    }
+
+    if policy.max_delay_ms < policy.initial_delay_ms {
+        bail!("{path}.max_delay_ms: must be greater than or equal to initial_delay_ms");
+    }
+
+    if let crate::retry::ExhaustedPolicy::DeadLetter { path: dlq_path } = &policy.on_exhausted {
+        if dlq_path.as_os_str().is_empty() {
+            bail!("{path}.on_exhausted.path: dead-letter path must not be empty");
+        }
+
+        if let Some(parent) = dlq_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                if !parent.exists() {
+                    bail!(
+                        "{path}.on_exhausted.path: parent directory '{}' does not exist",
+                        parent.display()
+                    );
+                }
+                if !parent.is_dir() {
+                    bail!(
+                        "{path}.on_exhausted.path: parent '{}' is not a directory",
+                        parent.display()
+                    );
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn is_supported_config_extension(path: &Path) -> bool {
@@ -1013,5 +1128,146 @@ mod tests {
             Some(ErrorPolicyConfig::FailPipeline),
         );
         assert_eq!(by_name["no-default"].sinks[0].on_error, None);
+    }
+
+    #[test]
+    fn validate_rejects_empty_pipeline_name() {
+        let config = Config::from_toml_str(
+            r#"
+            [[pipelines]]
+            name = "  "
+            [pipelines.source]
+            type = "noop"
+            [[pipelines.sinks]]
+            type = "noop"
+            "#,
+        )
+        .unwrap();
+
+        let msg = format!("{:#}", config.validate().unwrap_err());
+        assert!(msg.contains("pipelines[0].name"), "{msg}");
+        assert!(msg.contains("must not be empty"), "{msg}");
+    }
+
+    #[test]
+    fn validate_rejects_duplicate_pipeline_names_in_single_config() {
+        let config = Config::from_toml_str(
+            r#"
+            [[pipelines]]
+            name = "dup"
+            [pipelines.source]
+            type = "noop"
+            [[pipelines.sinks]]
+            type = "noop"
+
+            [[pipelines]]
+            name = "dup"
+            [pipelines.source]
+            type = "noop"
+            [[pipelines.sinks]]
+            type = "noop"
+            "#,
+        )
+        .unwrap();
+
+        let msg = format!("{:#}", config.validate().unwrap_err());
+        assert!(msg.contains("pipelines[1].name"), "{msg}");
+        assert!(msg.contains("duplicate pipeline name 'dup'"), "{msg}");
+    }
+
+    #[test]
+    fn validate_rejects_zero_channel_capacity() {
+        let config = Config::from_toml_str(
+            r#"
+            [[pipelines]]
+            name = "p"
+            channel_capacity = 0
+            [pipelines.source]
+            type = "noop"
+            [[pipelines.sinks]]
+            type = "noop"
+            "#,
+        )
+        .unwrap();
+
+        let msg = format!("{:#}", config.validate().unwrap_err());
+        assert!(msg.contains("pipeline 'p'.channel_capacity"), "{msg}");
+        assert!(msg.contains("greater than 0"), "{msg}");
+    }
+
+    #[test]
+    fn validate_rejects_missing_sinks() {
+        let config = Config::from_toml_str(
+            r#"
+            [[pipelines]]
+            name = "p"
+            [pipelines.source]
+            type = "noop"
+            "#,
+        )
+        .unwrap();
+
+        let msg = format!("{:#}", config.validate().unwrap_err());
+        assert!(msg.contains("pipeline 'p'.sinks"), "{msg}");
+        assert!(msg.contains("at least one sink is required"), "{msg}");
+    }
+
+    #[test]
+    fn validate_rejects_invalid_retry_policy() {
+        let config = Config::from_toml_str(
+            r#"
+            [[pipelines]]
+            name = "p"
+            [pipelines.source]
+            type = "noop"
+            [[pipelines.sinks]]
+            type = "noop"
+            [pipelines.sinks.retry]
+            max_attempts = 0
+            initial_delay_ms = 1
+            backoff_multiplier = 1.0
+            max_delay_ms = 1
+            "#,
+        )
+        .unwrap();
+
+        let msg = format!("{:#}", config.validate().unwrap_err());
+        assert!(
+            msg.contains("pipeline 'p'.sinks[0].retry.max_attempts"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_dead_letter_parent_that_is_not_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent_file = dir.path().join("not-a-dir");
+        std::fs::write(&parent_file, "").unwrap();
+        let dlq_path = parent_file.join("dlq.jsonl");
+        let config = Config::from_toml_str(&format!(
+            r#"
+            [[pipelines]]
+            name = "p"
+            [pipelines.source]
+            type = "noop"
+            [[pipelines.sinks]]
+            type = "noop"
+            [pipelines.sinks.retry]
+            max_attempts = 1
+            initial_delay_ms = 0
+            backoff_multiplier = 1.0
+            max_delay_ms = 0
+            on_exhausted = {{ kind = "dead_letter", path = "{}" }}
+            "#,
+            dlq_path.display()
+        ))
+        .unwrap();
+
+        let msg = format!("{:#}", config.validate().unwrap_err());
+        assert!(
+            msg.contains("pipeline 'p'.sinks[0].retry.on_exhausted.path"),
+            "{msg}"
+        );
+        assert!(msg.contains("is not a directory"), "{msg}");
     }
 }

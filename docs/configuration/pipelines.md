@@ -24,8 +24,8 @@ type = "kafka"
 
 | Field              | Required | Description |
 | ------------------ | -------- | ----------- |
-| `name`             | yes      | Unique identifier; appears in log/metric node ids. |
-| `channel_capacity` | no       | Buffer size for each `tokio::mpsc` edge inside the pipeline. Smaller values tighten [backpressure](../concepts/backpressure.md). |
+| `name`             | yes      | Non-empty unique identifier; appears in log/metric node ids. |
+| `channel_capacity` | no       | Buffer size for each `tokio::mpsc` edge inside the pipeline. Must be greater than `0`. Smaller values tighten [backpressure](../concepts/backpressure.md). |
 | `source`           | yes      | Exactly one source. See [Sources](../components/sources.md). |
 | `transforms`       | no       | Ordered list of transforms. See [Transforms](../components/transforms.md). |
 | `sinks`            | yes      | One or more sinks. With more than one, Courier inserts a broadcast splitter — every envelope is cloned to every sink, and a slow sink applies backpressure to the whole pipeline. |
@@ -63,7 +63,7 @@ pipelines.d/
 └── 90-debug.json
 ```
 
-Duplicate pipeline names across files are rejected at load time.
+Duplicate pipeline names across files are rejected at load time. Duplicate names inside one parsed config are rejected by the core validation pass.
 
 ## JSON form
 

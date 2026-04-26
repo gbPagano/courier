@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, bail};
 use async_trait::async_trait;
 use rdkafka::Message;
 use rdkafka::config::ClientConfig;
@@ -137,6 +137,22 @@ struct KafkaSourceConfig {
 /// `courier::registry::register_builtin` under kind `"kafka"`.
 pub fn kafka_source_factory(id: &str, config: Value) -> Result<Box<dyn Source>> {
     let config: KafkaSourceConfig = parse_config("kafka", config)?;
+    if config.brokers.trim().is_empty() {
+        bail!("invalid config for component type 'kafka': brokers must not be empty");
+    }
+    if config.group_id.trim().is_empty() {
+        bail!("invalid config for component type 'kafka': group_id must not be empty");
+    }
+    if config.topics.is_empty() {
+        bail!("invalid config for component type 'kafka': topics must not be empty");
+    }
+    if let Some(index) = config
+        .topics
+        .iter()
+        .position(|topic| topic.trim().is_empty())
+    {
+        bail!("invalid config for component type 'kafka': topics[{index}] must not be empty");
+    }
     let topics: Vec<_> = config.topics.iter().map(String::as_str).collect();
     Ok(Box::new(KafkaSource::new(
         id,
@@ -156,6 +172,22 @@ mod tests {
     use testcontainers_modules::kafka::apache::{self, KAFKA_PORT};
     use testcontainers_modules::testcontainers::runners::AsyncRunner;
     use tokio::sync::mpsc;
+
+    #[test]
+    fn factory_rejects_empty_topics() {
+        let err = kafka_source_factory(
+            "kafka",
+            serde_json::json!({
+                "brokers": "localhost:9092",
+                "group_id": "courier",
+                "topics": []
+            }),
+        )
+        .err()
+        .expect("expected empty topics to fail");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("topics must not be empty"), "{msg}");
+    }
 
     #[tokio::test]
     async fn emits_envelope_from_kafka_record() -> anyhow::Result<()> {

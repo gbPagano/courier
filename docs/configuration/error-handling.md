@@ -50,6 +50,8 @@ kind = "propagate"
 | `max_delay_ms`       | Cap on the delay between attempts. |
 | `on_exhausted`       | What to do once `max_attempts` is reached. See below. |
 
+Validation rejects retry policies with `max_attempts = 0`, non-finite or less-than-`1.0` backoff multipliers, `max_delay_ms < initial_delay_ms`, or zero delays when multiple attempts are configured. Dead-letter paths must be non-empty; if a parent directory is present, it must already exist and be a directory.
+
 ## Exhausted policy
 
 Once retries are exhausted, `on_exhausted` decides the fate of the envelope:

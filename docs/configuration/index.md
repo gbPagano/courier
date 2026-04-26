@@ -13,6 +13,16 @@ Courier loads its pipeline definitions at runtime from a configuration file — 
 
 Bad configuration fails at startup with a path-annotated error.
 
+## Validation phases
+
+Courier validates configuration after parsing and interpolation, before building runtime tasks:
+
+1. **Load/merge validation** parses TOML or JSON, applies per-file defaults, and merges directory-mode files. Directory mode rejects duplicate pipeline names across files.
+2. **Core validation** checks Courier-owned fields: non-empty and unique pipeline names, `channel_capacity > 0`, at least one sink per pipeline, non-empty component `type` values, retry bounds, and practical dead-letter path checks.
+3. **Component validation** runs each registered source, transform, and sink factory. Built-ins validate their own domain rules, such as script shape, URL syntax, SQL driver/DSN pairing, Kafka topic/group fields, and webhook bind/path values.
+
+`courier run` and `courier validate` use the same validation and build path, so a config accepted in CI is the same config shape accepted at startup. Validation does not prove that remote systems are reachable or that credentials are accepted; network connectivity, database permissions, Kafka broker availability, and receiver-side HTTP failures remain runtime checks.
+
 ## CLI checks
 
 Courier can validate configuration and inspect the installed runtime without starting pipelines.
@@ -21,7 +31,7 @@ Courier can validate configuration and inspect the installed runtime without sta
 courier validate --config config.toml
 ```
 
-`validate` loads the same config path rules as `run` (`--config`, then `COURIER_CONFIG`, then `config.toml`), parses the file or directory, registers built-ins, and builds the runtime graph without spawning pipelines. It exits non-zero with a path-annotated error if parsing or component construction fails. Use it as a CI or pre-deploy gate:
+`validate` loads the same config path rules as `run` (`--config`, then `COURIER_CONFIG`, then `config.toml`), parses the file or directory, registers built-ins, validates core settings, and builds the runtime graph without spawning pipelines. It exits non-zero with a path-annotated error if parsing, validation, or component construction fails. Use it as a CI or pre-deploy gate:
 
 ```yaml
 - name: Validate Courier config

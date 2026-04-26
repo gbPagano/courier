@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
@@ -121,6 +121,15 @@ struct ApiPollSourceConfig {
 /// `courier::registry::register_builtin` under kind `"api_poll"`.
 pub fn api_poll_source_factory(id: &str, config: Value) -> Result<Box<dyn Source>> {
     let config: ApiPollSourceConfig = parse_config("api_poll", config)?;
+    reqwest::Url::parse(&config.url).with_context(|| {
+        format!(
+            "invalid config for component type 'api_poll': invalid url '{}'",
+            config.url
+        )
+    })?;
+    if config.interval_secs == 0 {
+        bail!("invalid config for component type 'api_poll': interval_secs must be greater than 0");
+    }
     Ok(Box::new(ApiPollSource::new(
         id,
         config.url,
@@ -135,6 +144,43 @@ mod tests {
     use tokio::sync::mpsc;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn factory_rejects_invalid_url() {
+        let err = api_poll_source_factory(
+            "api",
+            json!({
+                "url": "not a url",
+                "interval_secs": 60
+            }),
+        )
+        .err()
+        .expect("expected invalid URL to fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("invalid config for component type 'api_poll'"),
+            "{msg}"
+        );
+        assert!(msg.contains("invalid url"), "{msg}");
+    }
+
+    #[test]
+    fn factory_rejects_zero_interval() {
+        let err = api_poll_source_factory(
+            "api",
+            json!({
+                "url": "http://localhost/data",
+                "interval_secs": 0
+            }),
+        )
+        .err()
+        .expect("expected zero interval to fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("interval_secs must be greater than 0"),
+            "{msg}"
+        );
+    }
 
     #[tokio::test]
     async fn emits_envelope_per_poll() {

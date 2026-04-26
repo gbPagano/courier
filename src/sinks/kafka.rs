@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
 use rdkafka::config::ClientConfig;
 use rdkafka::producer::{FutureProducer, FutureRecord};
@@ -87,6 +87,12 @@ pub fn kafka_sink_factory(
     retry: Option<RetryPolicy>,
 ) -> Result<Box<dyn Sink>> {
     let config: KafkaSinkConfig = parse_config("kafka", config)?;
+    if config.brokers.trim().is_empty() {
+        bail!("invalid config for component type 'kafka': brokers must not be empty");
+    }
+    if config.topic.trim().is_empty() {
+        bail!("invalid config for component type 'kafka': topic must not be empty");
+    }
     let kafka = KafkaSink::new(id, &config.brokers, config.topic);
     let mut sink = ManagedSink::new(kafka).with_error_policy(on_error);
     if let Some(policy) = retry {
@@ -105,6 +111,23 @@ mod tests {
     use testcontainers_modules::testcontainers::runners::AsyncRunner;
 
     use crate::sinks::WriteOne;
+
+    #[test]
+    fn factory_rejects_empty_topic() {
+        let err = kafka_sink_factory(
+            "kafka",
+            serde_json::json!({
+                "brokers": "localhost:9092",
+                "topic": ""
+            }),
+            ErrorPolicy::Drop,
+            None,
+        )
+        .err()
+        .expect("expected empty topic to fail");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("topic must not be empty"), "{msg}");
+    }
 
     #[tokio::test]
     async fn delivers_payload_and_key_with_source_id_fallback() -> anyhow::Result<()> {

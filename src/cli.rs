@@ -219,4 +219,44 @@ type = "missing"
         assert!(msg.contains("invalid.toml"), "{msg}");
         assert!(msg.contains("unknown sink type 'missing'"), "{msg}");
     }
+
+    #[test]
+    fn validate_rejects_invalid_script_config_with_component_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("invalid-script.toml");
+        std::fs::write(
+            &path,
+            r#"
+[[pipelines]]
+name = "invalid-script"
+
+[pipelines.source]
+type = "api_poll"
+url = "http://localhost/data"
+interval_secs = 60
+
+[[pipelines.transforms]]
+type = "script"
+runtime = "rhai"
+script = "payload"
+script_file = "/tmp/also-set.rhai"
+
+[[pipelines.sinks]]
+type = "api"
+url = "http://localhost/ingest"
+"#,
+        )
+        .unwrap();
+
+        let err = validate_config(&path).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("pipeline 'invalid-script' transform[0]"),
+            "{msg}"
+        );
+        assert!(
+            msg.contains("set either 'script' or 'script_file', not both"),
+            "{msg}"
+        );
+    }
 }

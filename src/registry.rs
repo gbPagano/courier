@@ -187,6 +187,8 @@ impl Registry {
     /// ids (`{pipeline}/src`, `{pipeline}/t{i}`, `{pipeline}/sink{i}`) so
     /// logs and metrics can be traced back to the pipeline that owns them.
     pub fn build_courier(&self, config: Config) -> Result<Courier> {
+        config.validate()?;
+
         let mut pipelines = Vec::with_capacity(config.pipelines.len());
         for spec in config.pipelines {
             let name = spec.name.clone();
@@ -200,7 +202,9 @@ impl Registry {
 
     fn build_pipeline(&self, spec: PipelineSpec) -> Result<Pipeline> {
         let name = spec.name;
-        let source = self.build_source(&format!("{name}/src"), spec.source)?;
+        let source = self
+            .build_source(&format!("{name}/src"), spec.source)
+            .with_context(|| format!("pipeline '{name}' source"))?;
 
         let mut pipeline = Pipeline::new(&name, source);
         if let Some(capacity) = spec.channel_capacity {
@@ -209,12 +213,18 @@ impl Registry {
 
         for (i, transform) in spec.transforms.into_iter().enumerate() {
             let id = format!("{name}/t{i}");
-            pipeline = pipeline.with_transform(self.build_transform(&id, transform)?);
+            pipeline = pipeline.with_transform(
+                self.build_transform(&id, transform)
+                    .with_context(|| format!("pipeline '{name}' transform[{i}]"))?,
+            );
         }
 
         for (i, sink) in spec.sinks.into_iter().enumerate() {
             let id = format!("{name}/sink{i}");
-            pipeline = pipeline.with_sink(self.build_sink(&id, sink)?);
+            pipeline = pipeline.with_sink(
+                self.build_sink(&id, sink)
+                    .with_context(|| format!("pipeline '{name}' sink[{i}]"))?,
+            );
         }
 
         Ok(pipeline)
@@ -618,6 +628,7 @@ mod tests {
         registry
             .register_source("boom", |_: &str, _: Value| Err(anyhow!("source blew up")))
             .unwrap();
+        registry.register_sink("noop", noop_sink).unwrap();
 
         let err = registry
             .build_courier(Config {
@@ -628,7 +639,7 @@ mod tests {
                         config: json!({}),
                     },
                     transforms: vec![],
-                    sinks: vec![],
+                    sinks: vec![noop_sink_spec(None)],
                     channel_capacity: None,
                 }],
             })
