@@ -47,5 +47,8 @@ jobs:
       - name: Cache cargo build artifacts
         uses: Swatinem/rust-cache@v2
 
-      - name: Run test suite with cargo test
-        run: cargo test
+      - name: Install cargo nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Run test suite with cargo nextest
+        run: cargo nextest run
