@@ -83,6 +83,28 @@ brokers = "localhost:9092"
 topic = "topic1"
 ```
 
+## API → HTTP webhook
+
+Forward polled events to an external HTTP endpoint. By default the [`api`](components/sinks.md#api) sink POSTs `env.payload` as the JSON body.
+
+```toml
+[[pipelines]]
+name = "api->webhook"
+
+[pipelines.source]
+type = "api_poll"
+url = "https://jsonplaceholder.typicode.com/posts/1"
+interval_secs = 5
+
+[[pipelines.sinks]]
+type = "api"
+url = "https://internal.example.com/webhooks/posts"
+method = "POST"
+headers = { Authorization = "Bearer ${API_TOKEN}" }
+```
+
+Set `body = "envelope"` if the receiver also needs `meta`. Non-2xx responses become sink errors and flow through the configured `on_error` and `retry` policies — the [retry/dead-letter recipe](#sink-with-retry-and-dead-letter) below applies unchanged.
+
 ## Fan-out to multiple sinks
 
 When you list more than one sink, Courier inserts an implicit broadcast splitter that clones each envelope to every sink. The splitter is synchronous per sink — see [Backpressure](concepts/backpressure.md).

@@ -7,6 +7,7 @@ use crate::envelope::Envelope;
 use crate::pipeline::ErrorPolicy;
 use crate::retry::RetryPolicy;
 
+pub mod api;
 pub mod kafka;
 mod retry;
 

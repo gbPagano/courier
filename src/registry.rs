@@ -253,6 +253,7 @@ pub fn register_builtin(registry: &mut Registry) -> Result<()> {
         "set_key",
         crate::transforms::set_key::set_key_transform_factory,
     )?;
+    registry.register_sink("api", crate::sinks::api::api_sink_factory)?;
     registry.register_sink("kafka", crate::sinks::kafka::kafka_sink_factory)?;
     Ok(())
 }
@@ -482,8 +483,9 @@ mod tests {
         transforms.sort();
         assert_eq!(transforms, vec!["script", "set_key"]);
 
-        let sinks: Vec<_> = registry.sink_kinds().collect();
-        assert_eq!(sinks, vec!["kafka"]);
+        let mut sinks: Vec<_> = registry.sink_kinds().collect();
+        sinks.sort();
+        assert_eq!(sinks, vec!["api", "kafka"]);
     }
 
     #[test]

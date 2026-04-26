@@ -4,6 +4,30 @@ A pipeline has one or more sinks. With more than one sink, Courier inserts an im
 
 The simplest sink implements `WriteOne::write(&env)` and is wrapped in `ManagedSink`, which owns the recv loop, honors the `CancellationToken`, and applies the configured [`on_error`](../configuration/error-handling.md) and [retry](../configuration/error-handling.md#retry-on-sinks) policies.
 
+## `api`
+
+Sends each envelope to an HTTP endpoint as a JSON request. Useful for webhook integrations, REST forwarding, and posting to internal services.
+
+```toml
+[[pipelines.sinks]]
+type = "api"
+url = "https://internal.example.com/webhooks/users"
+method = "POST"            # default
+body = "payload"           # default — send only env.payload
+headers = { Authorization = "Bearer token" }
+timeout_secs = 30          # optional
+```
+
+| Field          | Required | Default     | Description |
+| -------------- | -------- | ----------- | ----------- |
+| `url`          | yes      | —           | Endpoint to send the request to. |
+| `method`       | no       | `"POST"`    | Any HTTP method understood by `reqwest::Method` (`POST`, `PUT`, `PATCH`, `DELETE`, …). |
+| `headers`      | no       | `{}`        | String map appended to every request. |
+| `body`         | no       | `"payload"` | `"payload"` sends `env.payload` as the JSON body; `"envelope"` sends the full envelope (`{ "meta": …, "payload": … }`). |
+| `timeout_secs` | no       | none        | Per-request timeout. Omit to use the underlying `reqwest` default (no timeout). |
+
+Any non-2xx response, network error, or timeout is reported as a sink failure and flows through the configured [`on_error`](../configuration/error-handling.md) and [retry](../configuration/error-handling.md#retry-on-sinks) policies. The response body, when present on a failure, is included in the error message so it surfaces in logs and dead-letter entries.
+
 ## `kafka`
 
 Produces records to a Kafka topic via `rdkafka`.
