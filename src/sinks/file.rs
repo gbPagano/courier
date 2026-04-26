@@ -17,11 +17,11 @@ use crate::sinks::{ManagedSink, Sink, WriteOne};
 /// Local file sink. Appends one record per envelope to the configured path
 /// in either JSON Lines or CSV format.
 ///
-/// The file is opened in append mode and flushed after every write so a
-/// crashed pipeline still leaves consistent line-oriented output. Streaming
-/// writes are not transactional: a retried write after a partial failure
-/// may produce a duplicate row — `WriteOne` semantics, same as any other
-/// `ManagedSink`-wrapped sink.
+/// The file is opened lazily on first write, then kept in append mode and
+/// flushed after every write so validation can build this sink without file
+/// system side effects. Streaming writes are not transactional: a retried
+/// write after a partial failure may produce a duplicate row — `WriteOne`
+/// semantics, same as any other `ManagedSink`-wrapped sink.
 pub struct FileSink {
     id: String,
     path: PathBuf,
@@ -53,44 +53,56 @@ pub enum BodyFormat {
 }
 
 struct WriterState {
-    writer: BufWriter<File>,
+    writer: Option<BufWriter<File>>,
     /// True until the CSV header row has been written. Always false for
-    /// JSONL. Set from file size at open time so restarts on a non-empty
-    /// file resume cleanly without re-emitting headers.
+    /// JSONL. Refined from file size at lazy-open time so restarts on a
+    /// non-empty file resume cleanly without re-emitting headers.
     needs_header: bool,
 }
 
 impl FileSink {
     pub fn new(id: impl Into<String>, path: impl Into<PathBuf>, format: Format) -> Result<Self> {
         let path = path.into();
-        if let Some(parent) = path.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| anyhow!("failed to create parent dir for {}: {e}", path.display()))?;
+        Ok(Self {
+            id: id.into(),
+            path,
+            state: Mutex::new(WriterState {
+                writer: None,
+                needs_header: matches!(&format, Format::Csv { .. }),
+            }),
+            format,
+        })
+    }
+
+    fn ensure_open(&self, state: &mut WriterState) -> Result<()> {
+        if state.writer.is_some() {
+            return Ok(());
         }
 
-        let needs_header = matches!(&format, Format::Csv { .. })
-            && std::fs::metadata(&path)
+        if let Some(parent) = self.path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                anyhow!(
+                    "failed to create parent dir for {}: {e}",
+                    self.path.display()
+                )
+            })?;
+        }
+
+        if matches!(&self.format, Format::Csv { .. }) {
+            state.needs_header = std::fs::metadata(&self.path)
                 .map(|m| m.len() == 0)
                 .unwrap_or(true);
+        }
 
         let std_file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&path)
-            .map_err(|e| anyhow!("failed to open {}: {e}", path.display()))?;
-        let writer = BufWriter::new(File::from_std(std_file));
-
-        Ok(Self {
-            id: id.into(),
-            path,
-            format,
-            state: Mutex::new(WriterState {
-                writer,
-                needs_header,
-            }),
-        })
+            .open(&self.path)
+            .map_err(|e| anyhow!("failed to open {}: {e}", self.path.display()))?;
+        state.writer = Some(BufWriter::new(File::from_std(std_file)));
+        Ok(())
     }
 }
 
@@ -115,6 +127,7 @@ impl WriteOne for FileSink {
             Format::Csv { columns } => {
                 let env_value = serde_json::to_value(env)?;
                 let mut state = self.state.lock().await;
+                self.ensure_open(&mut state)?;
                 if state.needs_header {
                     write_csv_row(&mut buf, columns.iter().map(String::as_str));
                     state.needs_header = false;
@@ -125,11 +138,15 @@ impl WriteOne for FileSink {
 
                 state
                     .writer
+                    .as_mut()
+                    .expect("writer is opened above")
                     .write_all(buf.as_bytes())
                     .await
                     .map_err(|e| anyhow!("write to {} failed: {e}", self.path.display()))?;
                 state
                     .writer
+                    .as_mut()
+                    .expect("writer is opened above")
                     .flush()
                     .await
                     .map_err(|e| anyhow!("flush of {} failed: {e}", self.path.display()))?;
@@ -138,13 +155,18 @@ impl WriteOne for FileSink {
         }
 
         let mut state = self.state.lock().await;
+        self.ensure_open(&mut state)?;
         state
             .writer
+            .as_mut()
+            .expect("writer is opened above")
             .write_all(buf.as_bytes())
             .await
             .map_err(|e| anyhow!("write to {} failed: {e}", self.path.display()))?;
         state
             .writer
+            .as_mut()
+            .expect("writer is opened above")
             .flush()
             .await
             .map_err(|e| anyhow!("flush of {} failed: {e}", self.path.display()))?;

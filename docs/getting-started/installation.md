@@ -33,7 +33,7 @@ cargo clippy --all-targets
 By default, Courier reads `config.toml` from the working directory. Override the path with the `COURIER_CONFIG` environment variable — it can point at a single `.toml`/`.json` file or at a directory containing several:
 
 ```bash
-COURIER_CONFIG=./pipelines.d cargo run
+COURIER_CONFIG=./pipelines.d cargo run -- run
 ```
 
 In directory mode, every `.toml`/`.json` file in the directory is parsed in sorted order and the resulting `pipelines` lists are concatenated.

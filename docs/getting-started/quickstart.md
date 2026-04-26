@@ -34,8 +34,16 @@ A few things to notice:
 
 ## 3. Run
 
+Validate the config before starting the pipeline:
+
 ```bash
-cargo run
+cargo run -- validate --config config.toml
+```
+
+Then run Courier:
+
+```bash
+cargo run -- run
 ```
 
 You should see structured logs as each poll cycle pushes an envelope through the pipeline. Press <kbd>Ctrl</kbd>+<kbd>C</kbd> — Courier installs a SIGINT handler that drains gracefully via a shared `CancellationToken`.

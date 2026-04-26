@@ -44,7 +44,7 @@ topic = "topic1"
 Run it:
 
 ```bash
-cargo run
+cargo run -- run
 ```
 
 Pipelines are loaded at runtime from `config.toml` (override with `COURIER_CONFIG`). Restart the binary to pick up edits — no recompile required.

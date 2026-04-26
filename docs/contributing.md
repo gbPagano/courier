@@ -36,7 +36,7 @@ A short tour of the `src/` tree:
 | `src/retry.rs`          | `RetryPolicy`, `ExhaustedPolicy`, dead-letter writer. |
 | `src/registry.rs`       | `Registry` — kind → factory mapping. |
 | `src/config.rs`         | TOML/JSON loaders and `parse_config`. |
-| `src/main.rs`           | Binary entry point. Reads `COURIER_CONFIG`, builds a default registry, runs. |
+| `src/main.rs`           | Binary entry point. Dispatches CLI commands, reads `COURIER_CONFIG`, and starts the runtime via `run`. |
 
 ## Writing a new component
 
