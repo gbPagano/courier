@@ -340,7 +340,7 @@ mod tests {
     use opentelemetry::trace::TracerProvider;
     use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
     use serde_json::json;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, OnceLock};
     use tokio::sync::mpsc::{self, Sender};
     use tracing_subscriber::layer::SubscriberExt;
 
@@ -352,6 +352,17 @@ mod tests {
     use crate::observability::{SendStopped, SourceCtx};
     use crate::sinks::{ManagedSink, WriteOne};
     use crate::transforms::{BasicTransform, MapOne};
+
+    static TEST_TRACING_GLOBAL: OnceLock<()> = OnceLock::new();
+
+    fn install_test_tracing_global() {
+        TEST_TRACING_GLOBAL.get_or_init(|| {
+            let subscriber =
+                tracing_subscriber::registry().with(tracing_subscriber::filter::LevelFilter::TRACE);
+            let _ = tracing::subscriber::set_global_default(subscriber);
+        });
+        tracing::callsite::rebuild_interest_cache();
+    }
 
     struct HundredSource;
 
@@ -507,6 +518,8 @@ mod tests {
 
     #[test]
     fn trace_context_propagates_across_pipeline() {
+        install_test_tracing_global();
+
         let exporter = InMemorySpanExporter::default();
         let provider = SdkTracerProvider::builder()
             .with_simple_exporter(exporter.clone())
@@ -524,6 +537,7 @@ mod tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
 
         tracing::dispatcher::with_default(&dispatch, || {
+            tracing::callsite::rebuild_interest_cache();
             runtime.block_on(async {
                 let cancel = CancellationToken::new();
                 let (source_tx, transform_rx) = mpsc::channel(8);
@@ -550,6 +564,7 @@ mod tests {
                 ));
                 Box::new(sink).run(sink_rx, cancel).await;
             });
+            tracing::callsite::rebuild_interest_cache();
         });
         provider.force_flush().unwrap();
 
