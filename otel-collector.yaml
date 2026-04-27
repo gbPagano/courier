@@ -1,0 +1,76 @@
+# Reference OpenTelemetry Collector configuration for Courier.
+#
+# Receives OTLP from Courier (gRPC :4317 and HTTP :4318), re-exposes a
+# Prometheus scrape endpoint on :9464, and forwards traces to Tempo over
+# OTLP/gRPC. Swap the trace exporter block for `jaeger` if you prefer
+# Jaeger; both are documented inline below.
+#
+# Used by docker-compose.observability.yml. Mount this file at
+# /etc/otelcol-contrib/config.yaml inside the collector container.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    # Small batches keep dashboard latency low for a local dev stack;
+    # production deployments should raise this.
+    timeout: 1s
+    send_batch_size: 1024
+
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 75
+    spike_limit_percentage: 25
+
+exporters:
+  # Re-exposes Courier's metrics for Prometheus to scrape. Pair with the
+  # prometheus job in docker-compose.observability.yml.
+  prometheus:
+    endpoint: 0.0.0.0:9464
+    # Keep the OTLP `service.name` resource attribute as a label so
+    # multi-instance deployments can be distinguished in Grafana.
+    resource_to_telemetry_conversion:
+      enabled: true
+
+  # Trace backend — Tempo. Tempo's OTLP endpoint is plain gRPC.
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+
+  # Alternative trace backend — Jaeger. Uncomment this block (and swap
+  # the `traces` pipeline below) to forward to Jaeger instead.
+  #
+  # otlp/jaeger:
+  #   endpoint: jaeger:4317
+  #   tls:
+  #     insecure: true
+
+  # Optional: stdout for quick local debugging.
+  debug:
+    verbosity: basic
+
+service:
+  telemetry:
+    logs:
+      level: info
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [prometheus]
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp/tempo]
+      # exporters: [otlp/jaeger]   # if you swapped to Jaeger above
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug]

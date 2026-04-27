@@ -67,6 +67,7 @@ nav = [
         { "Architecture" = "concepts/architecture.md" },
         { "Envelope" = "concepts/envelope.md" },
         { "Backpressure" = "concepts/backpressure.md" },
+        { "Observability" = "concepts/observability.md" },
     ] },
     { "Components" = [
         { "Overview" = "components/index.md" },

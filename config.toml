@@ -1,82 +1,43 @@
-# Pipeline 1: kafka -> kafka
+[observability]
+log_level  = "info"            # default filter when RUST_LOG is unset
+log_keys   = false             # allow meta.key in span fields (off by default)
+
+[observability.metrics]
+otlp_endpoint     = "http://localhost:4317"
+export_interval_ms = 5000     # OTLP push interval (default 15 s)
+
+[observability.tracing]
+otlp_endpoint = "http://localhost:4317"
+sample_ratio  = 1.0            # parent-based sampling (0.0–1.0)
+service_name  = "courier"      # OTel resource service.name
+
 [[pipelines]]
-name = "kafka->kafka"
-
-[pipelines.source]
-type = "kafka"
-brokers = "localhost:9092"
-group_id = "user-events-consumer"
-topics = ["topic1"]
-
-[[pipelines.sinks]]
-type = "kafka"
-brokers = "localhost:9092"
-topic = "topic2"
-
-# Pipeline 2: api polling -> kafka
-[[pipelines]]
-name = "api->kafka"
+name = "api->csv"
 
 [pipelines.source]
 type = "api_poll"
-url = "https://jsonplaceholder.typicode.com/posts/1"
-interval_secs = 3
+url = "https://jsonplaceholder.typicode.com/users/1"
+interval_secs = 10
+
+[[pipelines.sinks]]
+type = "file"
+path = "./out/users.csv"
+format = "csv"
+columns = ["payload.id", "payload.name", "payload.email", "meta.source_id"]
 
 [[pipelines.sinks]]
 type = "kafka"
 brokers = "localhost:9092"
 topic = "topic1"
+on_error = "drop"
 
-# Pipeline 3: api polling -> two kafka topics (auto-broadcast)
-[[pipelines]]
-name = "api->multi-kafka"
-channel_capacity = 128
+[pipelines.sinks.retry]
+max_attempts = 3
+initial_delay_ms = 100
+backoff_multiplier = 2.0
+max_delay_ms = 5000
 
-[pipelines.source]
-type = "api_poll"
-url = "https://jsonplaceholder.typicode.com/posts/1"
-interval_secs = 5
+[pipelines.sinks.retry.on_exhausted]
+kind = "dead_letter"
+path = "./dlq.jsonl"
 
-[[pipelines.sinks]]
-type = "kafka"
-brokers = "localhost:9092"
-topic = "topic3"
-
-[[pipelines.sinks]]
-type = "kafka"
-brokers = "localhost:9092"
-topic = "topic4"
-
-# Pipeline 4: api polling -> scripted transform -> kafka
-[[pipelines]]
-name = "api->script->kafka"
-
-[pipelines.source]
-type = "api_poll"
-url = "https://jsonplaceholder.typicode.com/posts/1"
-interval_secs = 3
-
-[[pipelines.transforms]]
-type = "script"
-runtime = "rhai"
-entrypoint = "transform"
-max_operations = 100000
-script = """
-fn transform(env) {
-  if env.payload["userId"] == 1 {
-    env.meta.headers["priority"] = "high";
-  }
-
-  if env.payload["id"] == 0 {
-    return ();
-  }
-
-  env.payload["processed"] = true;
-  env
-}
-"""
-
-[[pipelines.sinks]]
-type = "kafka"
-brokers = "localhost:9092"
-topic = "topic5"

@@ -1,0 +1,282 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "title": "Courier",
+  "tags": ["courier", "observability"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {
+          "text": "Prometheus",
+          "value": "Prometheus"
+        }
+      },
+      {
+        "name": "pipeline",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "query": "label_values(courier_envelopes_processed_total, pipeline)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Throughput — processed / filtered / failed",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": { "unit": "ops" },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum by (pipeline) (rate(courier_envelopes_processed_total{pipeline=~\"$pipeline\"}[1m]))",
+          "legendFormat": "{{pipeline}} processed",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (pipeline) (rate(courier_envelopes_filtered_total{pipeline=~\"$pipeline\"}[1m]))",
+          "legendFormat": "{{pipeline}} filtered",
+          "refId": "B"
+        },
+        {
+          "expr": "sum by (pipeline) (rate(courier_envelopes_failed_total{pipeline=~\"$pipeline\"}[1m]))",
+          "legendFormat": "{{pipeline}} failed",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Per-node processed (envelopes/s)",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": {
+        "defaults": { "unit": "ops" },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum by (node_id, node_kind) (rate(courier_envelopes_processed_total{pipeline=~\"$pipeline\"}[1m]))",
+          "legendFormat": "{{node_id}} ({{node_kind}})",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Stage duration (p50 / p95 / p99)",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "fieldConfig": {
+        "defaults": { "unit": "ms" },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, node_id) (rate(courier_stage_duration_milliseconds_bucket{pipeline=~\"$pipeline\"}[5m])))",
+          "legendFormat": "p50 {{node_id}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, node_id) (rate(courier_stage_duration_milliseconds_bucket{pipeline=~\"$pipeline\"}[5m])))",
+          "legendFormat": "p95 {{node_id}}",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, node_id) (rate(courier_stage_duration_milliseconds_bucket{pipeline=~\"$pipeline\"}[5m])))",
+          "legendFormat": "p99 {{node_id}}",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "End-to-end latency at sinks (p50 / p95 / p99)",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "fieldConfig": {
+        "defaults": { "unit": "ms" },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, pipeline) (rate(courier_end_to_end_latency_milliseconds_bucket{pipeline=~\"$pipeline\"}[5m])))",
+          "legendFormat": "p50 {{pipeline}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, pipeline) (rate(courier_end_to_end_latency_milliseconds_bucket{pipeline=~\"$pipeline\"}[5m])))",
+          "legendFormat": "p95 {{pipeline}}",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, pipeline) (rate(courier_end_to_end_latency_milliseconds_bucket{pipeline=~\"$pipeline\"}[5m])))",
+          "legendFormat": "p99 {{pipeline}}",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Retries & dead-letters",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "fieldConfig": {
+        "defaults": { "unit": "ops" },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum by (node_id) (rate(courier_retries_total{pipeline=~\"$pipeline\"}[1m]))",
+          "legendFormat": "retries {{node_id}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (node_id) (rate(courier_dead_lettered_total{pipeline=~\"$pipeline\"}[1m]))",
+          "legendFormat": "dead-lettered {{node_id}}",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Channel depth (in-flight items per edge, p95)",
+      "description": "Sampled every 300ms by Courier; values close to channel_capacity indicate downstream backpressure.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "fieldConfig": {
+        "defaults": { "unit": "short" },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, node_id) (rate(courier_channel_capacity_used_bucket{pipeline=~\"$pipeline\"}[1m])))",
+          "legendFormat": "p95 {{node_id}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "Failure ratio (last 5m)",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 24 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.01 },
+              { "color": "red", "value": 0.05 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background"
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(courier_envelopes_failed_total{pipeline=~\"$pipeline\"}[5m])) / clamp_min(sum(rate(courier_envelopes_processed_total{pipeline=~\"$pipeline\"}[5m])) + sum(rate(courier_envelopes_failed_total{pipeline=~\"$pipeline\"}[5m])), 1)",
+          "legendFormat": "failed/(processed+failed)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "stat",
+      "title": "Dead-letter rate (5m)",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 24 },
+      "fieldConfig": {
+        "defaults": { "unit": "ops" }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(courier_dead_lettered_total{pipeline=~\"$pipeline\"}[5m]))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "stat",
+      "title": "Retry rate (5m)",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 24 },
+      "fieldConfig": {
+        "defaults": { "unit": "ops" }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(courier_retries_total{pipeline=~\"$pipeline\"}[5m]))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "stat",
+      "title": "Filtered ratio (5m)",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 24 },
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit" }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(courier_envelopes_filtered_total{pipeline=~\"$pipeline\"}[5m])) / clamp_min(sum(rate(courier_envelopes_filtered_total{pipeline=~\"$pipeline\"}[5m])) + sum(rate(courier_envelopes_processed_total{pipeline=~\"$pipeline\"}[5m])), 1)",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

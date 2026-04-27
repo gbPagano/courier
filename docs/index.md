@@ -14,6 +14,7 @@ hide:
 - Apply [backpressure](concepts/backpressure.md) end-to-end through bounded channels
 - Retry failed sink writes with exponential backoff and a dead-letter destination
 - Embed scripted [transforms](scripting/index.md) in Rhai, Lua, or Python
+- Emit structured logs, metrics, and W3C-propagated traces over [OpenTelemetry](concepts/observability.md) (OTLP)
 - Shut down gracefully on SIGINT via a shared `CancellationToken`
 
 ## Where to start
