@@ -67,6 +67,7 @@ struct ObsHandleInner {
     /// reader); `None` for the global noop fallback.
     provider: Option<SdkMeterProvider>,
     instruments: Instruments,
+    log_keys: bool,
 }
 
 struct Instruments {
@@ -94,7 +95,7 @@ impl ObsHandle {
     /// are disabled.
     pub fn noop() -> Self {
         let meter = Meter::new(Arc::new(NoopInstrumentProvider));
-        Self::from_meter(meter, None)
+        Self::from_meter(meter, None, false)
     }
 
     /// Whether this handle owns a concrete SDK provider. False means
@@ -104,7 +105,7 @@ impl ObsHandle {
         self.inner.provider.is_some()
     }
 
-    fn from_meter(meter: Meter, provider: Option<SdkMeterProvider>) -> Self {
+    fn from_meter(meter: Meter, provider: Option<SdkMeterProvider>, log_keys: bool) -> Self {
         let instruments = Instruments {
             processed: meter
                 .u64_counter("courier_envelopes_processed_total")
@@ -151,6 +152,7 @@ impl ObsHandle {
             inner: Arc::new(ObsHandleInner {
                 provider,
                 instruments,
+                log_keys,
             }),
         }
     }
@@ -180,6 +182,10 @@ impl ObsHandle {
 pub struct NodeCtx {
     handle: ObsHandle,
     attrs: Arc<[KeyValue]>,
+    pipeline: Arc<str>,
+    node_id: Arc<str>,
+    node_kind: NodeKind,
+    log_keys: bool,
 }
 
 impl NodeCtx {
@@ -195,7 +201,15 @@ impl NodeCtx {
             ]
             .as_slice(),
         );
-        Self { handle, attrs }
+        let log_keys = handle.inner.log_keys;
+        Self {
+            handle,
+            attrs,
+            pipeline: Arc::from(pipeline),
+            node_id: Arc::from(node_id),
+            node_kind,
+            log_keys,
+        }
     }
 
     /// No-op context with empty attributes, backed by a private
@@ -206,6 +220,10 @@ impl NodeCtx {
         Self {
             handle: ObsHandle::noop(),
             attrs: Arc::from([] as [KeyValue; 0]),
+            pipeline: Arc::from(""),
+            node_id: Arc::from(""),
+            node_kind: NodeKind::Transform,
+            log_keys: false,
         }
     }
 
@@ -215,6 +233,26 @@ impl NodeCtx {
 
     pub fn handle(&self) -> &ObsHandle {
         &self.handle
+    }
+
+    pub fn pipeline(&self) -> &str {
+        &self.pipeline
+    }
+
+    pub fn node_id(&self) -> &str {
+        &self.node_id
+    }
+
+    pub fn node_kind(&self) -> NodeKind {
+        self.node_kind
+    }
+
+    pub fn node_kind_str(&self) -> &'static str {
+        self.node_kind.as_str()
+    }
+
+    pub fn log_keys(&self) -> bool {
+        self.log_keys
     }
 
     pub fn record_processed(&self) {
@@ -300,7 +338,7 @@ pub fn init_metrics(config: Option<&ObservabilityConfig>) -> Result<ObsHandle> {
         .build();
 
     let meter = provider.meter("courier");
-    Ok(ObsHandle::from_meter(meter, Some(provider)))
+    Ok(ObsHandle::from_meter(meter, Some(provider), obs.log_keys))
 }
 
 #[cfg(test)]
@@ -334,7 +372,7 @@ pub(crate) mod testing {
             .with_resource(Resource::builder().with_service_name("test").build())
             .build();
         let meter = provider.meter("courier_test");
-        let handle = ObsHandle::from_meter(meter, Some(provider));
+        let handle = ObsHandle::from_meter(meter, Some(provider), false);
         (handle, exporter)
     }
 

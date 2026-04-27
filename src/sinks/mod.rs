@@ -4,10 +4,13 @@ use anyhow::Result;
 use async_trait::async_trait;
 use tokio::sync::mpsc::Receiver;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use self::retry::WriteOutcome;
 use crate::envelope::Envelope;
 use crate::observability::NodeCtx;
+use crate::observability::trace_context;
 use crate::pipeline::ErrorPolicy;
 use crate::retry::RetryPolicy;
 
@@ -100,15 +103,31 @@ impl<W: WriteOne + 'static> Sink for ManagedSink<W> {
                     break;
                 }
                 maybe = rx.recv() => {
-                    let Some(env) = maybe else {
+                    let Some(mut env) = maybe else {
                         tracing::debug!(node_id = %id, reason = "upstream_closed", "sink loop ending");
                         break;
                     };
+                    let span = tracing::info_span!(
+                        "courier.sink",
+                        pipeline = %ctx.pipeline(),
+                        node_id = %ctx.node_id(),
+                        node_kind = %ctx.node_kind_str(),
+                        envelope.source_id = %env.meta.source_id,
+                        envelope.key = if ctx.log_keys() { env.meta.key.as_deref().unwrap_or("") } else { "" },
+                    );
+                    if let Some(parent) = trace_context::extract(&env.meta.headers) {
+                        let _ = span.set_parent(parent);
+                    }
+                    trace_context::inject(&mut env.meta.headers, &span.context());
                     let started = Instant::now();
-                    let result = match &self.retry {
-                        Some(policy) => retry::write_with_retry(&self.inner, &env, policy, &ctx).await,
-                        None => self.inner.write(&env).await.map(|()| WriteOutcome::Written),
-                    };
+                    let result = async {
+                        match &self.retry {
+                            Some(policy) => retry::write_with_retry(&self.inner, &env, policy, &ctx).await,
+                            None => self.inner.write(&env).await.map(|()| WriteOutcome::Written),
+                        }
+                    }
+                    .instrument(span)
+                    .await;
                     ctx.record_stage_duration_ms(started.elapsed().as_secs_f64() * 1000.0);
 
                     match result {

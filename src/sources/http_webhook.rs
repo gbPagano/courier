@@ -15,6 +15,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::parse_config;
 use crate::envelope::Envelope;
+use crate::observability::SourceCtx;
+use crate::observability::trace_context::{TRACEPARENT, TRACESTATE};
 use crate::retry::RetryPolicy;
 use crate::sources::Source;
 
@@ -47,6 +49,7 @@ impl Source for HttpWebhookSource {
     async fn run(self: Box<Self>, tx: Sender<Envelope>, cancel: CancellationToken) {
         let state = WebhookState {
             source_id: self.id.clone(),
+            source_ctx: SourceCtx::new(&self.id),
             tx,
         };
         let app = Router::new()
@@ -82,6 +85,7 @@ impl Source for HttpWebhookSource {
 #[derive(Clone)]
 struct WebhookState {
     source_id: String,
+    source_ctx: SourceCtx,
     tx: Sender<Envelope>,
 }
 
@@ -104,7 +108,11 @@ async fn handle_webhook(
     let mut env = Envelope::new(&state.source_id, payload);
     capture_headers(&headers, &mut env);
 
-    match state.tx.send(env).await {
+    match state
+        .source_ctx
+        .send(&state.tx, env, &CancellationToken::new())
+        .await
+    {
         Ok(()) => (StatusCode::ACCEPTED, "accepted").into_response(),
         Err(_) => (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -126,6 +134,11 @@ fn capture_headers(headers: &HeaderMap, env: &mut Envelope) {
         env.meta
             .headers
             .insert(format!("http.header.{}", name.as_str()), value.to_string());
+        if matches!(name.as_str(), TRACEPARENT | TRACESTATE) {
+            env.meta
+                .headers
+                .insert(name.as_str().to_string(), value.to_string());
+        }
     }
 }
 
@@ -190,6 +203,10 @@ mod tests {
         let response = Client::new()
             .post(format!("http://{bind}/events"))
             .header("x-event-id", "evt-1")
+            .header(
+                "traceparent",
+                "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+            )
             .json(&json!({ "event": "created" }))
             .send()
             .await
@@ -208,6 +225,7 @@ mod tests {
             env.meta.headers.get("http.header.x-event-id"),
             Some(&"evt-1".to_string())
         );
+        assert!(env.meta.headers.contains_key(TRACEPARENT));
 
         cancel.cancel();
         let _ = tokio::time::timeout(Duration::from_secs(1), handle).await;

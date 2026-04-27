@@ -6,22 +6,32 @@
 //!   the same pipeline.
 //! - [`metrics::ObsHandle`] / [`metrics::NodeCtx`] own the OpenTelemetry
 //!   metrics SDK wiring and pre-bind counters/histograms per node.
-//!
-//! W3C trace-context propagation and OTLP traces ship in PR 4 (see
-//! `OBSERVABILITY_PLAN.md`).
+//! - [`trace_context`] propagates W3C `traceparent` / `tracestate` through
+//!   envelope metadata.
 
-use std::sync::Once;
+use std::sync::{Once, OnceLock};
 
+use anyhow::{Context, Result};
+use opentelemetry::trace::TracerProvider as _;
+use opentelemetry_otlp::{SpanExporter, WithExportConfig};
+use opentelemetry_sdk::Resource;
+use opentelemetry_sdk::trace::{Sampler, SdkTracerProvider};
 use tracing_log::LogTracer;
-use tracing_subscriber::{EnvFilter, fmt};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{EnvFilter, fmt, registry};
 
 use crate::config::{LogFormat, ObservabilityConfig};
 
 pub mod metrics;
+pub mod source_ctx;
+pub mod trace_context;
 
 pub use metrics::{NodeCtx, NodeKind, ObsHandle, init_metrics};
+pub use source_ctx::{SendStopped, SourceCtx};
 
 static INIT: Once = Once::new();
+static TRACER_PROVIDER: OnceLock<SdkTracerProvider> = OnceLock::new();
 
 /// Initialize the global logging subscriber with built-in defaults.
 ///
@@ -32,8 +42,8 @@ static INIT: Once = Once::new();
 ///
 /// Idempotent: a second call on the same process is a no-op so tests and
 /// embedders that re-enter the entry point do not panic.
-pub fn init_default_logging(default_directive: &str) {
-    init_from_config(None, default_directive);
+pub fn init_default_logging(default_directive: &str) -> Result<()> {
+    init_from_config(None, default_directive)
 }
 
 /// Initialize the subscriber from an optional `[observability]` config.
@@ -45,13 +55,30 @@ pub fn init_default_logging(default_directive: &str) {
 /// 3. The caller-supplied `default_directive` (built-in per-subcommand).
 ///
 /// Idempotent like [`init_default_logging`].
-pub fn init_from_config(config: Option<&ObservabilityConfig>, default_directive: &str) {
+pub fn init_from_config(
+    config: Option<&ObservabilityConfig>,
+    default_directive: &str,
+) -> Result<()> {
     let format = config.map(|c| c.log_format).unwrap_or_default();
     let configured_level = config.and_then(|c| c.log_level.clone());
-    INIT.call_once(|| install(format, configured_level.as_deref(), default_directive));
+    let tracer_provider = init_traces(config)?;
+    INIT.call_once(|| {
+        install(
+            format,
+            configured_level.as_deref(),
+            default_directive,
+            tracer_provider,
+        )
+    });
+    Ok(())
 }
 
-fn install(format: LogFormat, configured_level: Option<&str>, default_directive: &str) {
+fn install(
+    format: LogFormat,
+    configured_level: Option<&str>,
+    default_directive: &str,
+    tracer_provider: Option<SdkTracerProvider>,
+) {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         EnvFilter::try_new(configured_level.unwrap_or(default_directive))
             .expect("configured/default log filter should be valid")
@@ -61,11 +88,74 @@ fn install(format: LogFormat, configured_level: Option<&str>, default_directive:
     // Match the prior `env_logger` behavior: write to stderr so stdout stays
     // clean for command output (`validate`, `list-components`) and for users
     // piping `courier run` output downstream.
-    let builder = fmt().with_env_filter(filter).with_writer(std::io::stderr);
-    let _ = match format {
-        LogFormat::Text => builder.try_init(),
-        LogFormat::Json => builder.json().try_init(),
+    if let Some(provider) = tracer_provider {
+        let tracer = provider.tracer("courier");
+        let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
+        let _ = TRACER_PROVIDER.set(provider);
+        let _ = match format {
+            LogFormat::Text => registry()
+                .with(filter)
+                .with(telemetry)
+                .with(fmt::layer().with_writer(std::io::stderr))
+                .try_init(),
+            LogFormat::Json => registry()
+                .with(filter)
+                .with(telemetry)
+                .with(fmt::layer().json().with_writer(std::io::stderr))
+                .try_init(),
+        };
+    } else {
+        let _ = match format {
+            LogFormat::Text => registry()
+                .with(filter)
+                .with(fmt::layer().with_writer(std::io::stderr))
+                .try_init(),
+            LogFormat::Json => registry()
+                .with(filter)
+                .with(fmt::layer().json().with_writer(std::io::stderr))
+                .try_init(),
+        };
+    }
+}
+
+fn init_traces(config: Option<&ObservabilityConfig>) -> Result<Option<SdkTracerProvider>> {
+    let Some(obs) = config else {
+        return Ok(None);
     };
+    let Some(endpoint) = obs.tracing.otlp_endpoint.as_deref() else {
+        return Ok(None);
+    };
+
+    let exporter = SpanExporter::builder()
+        .with_tonic()
+        .with_endpoint(endpoint)
+        .build()
+        .with_context(|| format!("failed to build OTLP span exporter for {endpoint}"))?;
+
+    let sampler = Sampler::ParentBased(Box::new(Sampler::TraceIdRatioBased(
+        obs.tracing.sample_ratio,
+    )));
+    let resource = Resource::builder()
+        .with_service_name(obs.tracing.service_name.clone())
+        .build();
+    let provider = SdkTracerProvider::builder()
+        .with_batch_exporter(exporter)
+        .with_sampler(sampler)
+        .with_resource(resource)
+        .build();
+    Ok(Some(provider))
+}
+
+pub fn force_flush_traces() {
+    if let Some(provider) = TRACER_PROVIDER.get() {
+        let _ = provider.force_flush();
+    }
+}
+
+pub fn shutdown_traces() {
+    if let Some(provider) = TRACER_PROVIDER.get() {
+        let _ = provider.shutdown();
+    }
 }
 
 #[cfg(test)]

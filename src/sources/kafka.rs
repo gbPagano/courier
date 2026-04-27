@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use rdkafka::Message;
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{Consumer, StreamConsumer};
+use rdkafka::message::Headers;
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::sync::mpsc::Sender;
@@ -10,6 +11,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::parse_config;
 use crate::envelope::Envelope;
+use crate::observability::trace_context::{TRACEPARENT, TRACESTATE};
+use crate::observability::{SendStopped, SourceCtx};
 use crate::retry::RetryPolicy;
 use crate::sources::Source;
 
@@ -55,6 +58,7 @@ impl Source for KafkaSource {
 
     async fn run(self: Box<Self>, tx: Sender<Envelope>, cancel: CancellationToken) {
         log::info!("[{}] starting kafka consumer", self.id);
+        let source_ctx = SourceCtx::new(&self.id);
 
         loop {
             let msg = tokio::select! {
@@ -108,19 +112,29 @@ impl Source for KafkaSource {
             env.meta
                 .headers
                 .insert("kafka.offset".into(), offset.to_string());
+            if let Some(headers) = msg.headers() {
+                for header in headers.iter() {
+                    if matches!(header.key, TRACEPARENT | TRACESTATE)
+                        && let Some(value) = header.value.and_then(|v| std::str::from_utf8(v).ok())
+                    {
+                        env.meta
+                            .headers
+                            .insert(header.key.to_string(), value.to_string());
+                    }
+                }
+            }
 
             log::debug!(
                 "[{}] received topic={topic} partition={partition} offset={offset}",
                 self.id,
             );
 
-            tokio::select! {
-                _ = cancel.cancelled() => return,
-                res = tx.send(env) => {
-                    if res.is_err() {
-                        log::info!("[{}] downstream closed, stopping", self.id);
-                        return;
-                    }
+            match source_ctx.send(&tx, env, &cancel).await {
+                Ok(()) => {}
+                Err(SendStopped::Cancelled) => return,
+                Err(SendStopped::DownstreamClosed) => {
+                    log::info!("[{}] downstream closed, stopping", self.id);
+                    return;
                 }
             }
         }

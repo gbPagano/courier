@@ -109,7 +109,7 @@ pub(crate) fn spawn_pipeline(p: Pipeline, cancel: CancellationToken) -> Vec<Join
     let transforms_total = transforms.len();
 
     // Source-out edge sampler.
-    if let Some(handle) = &obs {
+    if let Some(handle) = obs.as_ref().filter(|h| h.is_enabled()) {
         spawn_edge_sampler(
             &id,
             &prev_node_id,
@@ -139,7 +139,7 @@ pub(crate) fn spawn_pipeline(p: Pipeline, cancel: CancellationToken) -> Vec<Join
         let (next_tx, next_rx) = mpsc::channel::<Envelope>(cap);
 
         // Edge from this transform to the next stage.
-        if let Some(handle) = &obs {
+        if let Some(handle) = obs.as_ref().filter(|h| h.is_enabled()) {
             let dest_node_id = transform_or_sink_id_after(&id, i + 1, transforms_total, &sinks);
             spawn_edge_sampler(
                 &id,
@@ -205,7 +205,7 @@ pub(crate) fn spawn_pipeline(p: Pipeline, cancel: CancellationToken) -> Vec<Join
                     ));
                 }
                 let (tx, rx) = mpsc::channel::<Envelope>(cap);
-                if let Some(handle) = &obs {
+                if let Some(handle) = obs.as_ref().filter(|h| h.is_enabled()) {
                     spawn_edge_sampler(
                         &id,
                         &splitter_id,
@@ -337,13 +337,19 @@ mod tests {
     use anyhow::Result;
     use async_trait::async_trait;
     use futures::future::join_all;
+    use opentelemetry::trace::TracerProvider;
+    use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
     use serde_json::json;
-    use tokio::sync::mpsc::Sender;
+    use std::sync::{Arc, Mutex};
+    use tokio::sync::mpsc::{self, Sender};
+    use tracing_subscriber::layer::SubscriberExt;
 
     use super::*;
     use crate::observability::metrics::testing::{
         counter_sum, histogram_count, obs_handle_in_memory,
     };
+    use crate::observability::trace_context::TRACEPARENT;
+    use crate::observability::{SendStopped, SourceCtx};
     use crate::sinks::{ManagedSink, WriteOne};
     use crate::transforms::{BasicTransform, MapOne};
 
@@ -391,6 +397,56 @@ mod tests {
         }
 
         async fn write(&self, _env: &Envelope) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    struct TraceSource;
+
+    #[async_trait]
+    impl Source for TraceSource {
+        fn id(&self) -> &str {
+            "src"
+        }
+
+        async fn run(self: Box<Self>, tx: Sender<Envelope>, cancel: CancellationToken) {
+            let source = SourceCtx::new("trace/src");
+            let mut env = Envelope::new("src", json!({ "n": 1 }));
+            env.meta.headers.insert(
+                TRACEPARENT.to_string(),
+                "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".to_string(),
+            );
+            match source.send(&tx, env, &cancel).await {
+                Ok(()) | Err(SendStopped::Cancelled) | Err(SendStopped::DownstreamClosed) => {}
+            }
+        }
+    }
+
+    struct PassThrough;
+
+    #[async_trait]
+    impl MapOne for PassThrough {
+        fn id(&self) -> &str {
+            "pass"
+        }
+
+        async fn map(&self, env: Envelope) -> Result<Option<Envelope>> {
+            Ok(Some(env))
+        }
+    }
+
+    struct CaptureSink {
+        seen: Arc<Mutex<Vec<Envelope>>>,
+    }
+
+    #[async_trait]
+    impl WriteOne for CaptureSink {
+        fn id(&self) -> &str {
+            "capture"
+        }
+
+        async fn write(&self, env: &Envelope) -> Result<()> {
+            self.seen.lock().unwrap().push(env.clone());
             Ok(())
         }
     }
@@ -446,6 +502,79 @@ mod tests {
                 &[("pipeline", "metrics"), ("node_id", "metrics/sink0")]
             ),
             50
+        );
+    }
+
+    #[test]
+    fn trace_context_propagates_across_pipeline() {
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let tracer = provider.tracer("courier_test");
+        let subscriber =
+            tracing_subscriber::registry().with(tracing_opentelemetry::layer().with_tracer(tracer));
+        let dispatch = tracing::Dispatch::new(subscriber);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let (metrics, _metric_exporter) = obs_handle_in_memory();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            runtime.block_on(async {
+                let cancel = CancellationToken::new();
+                let (source_tx, transform_rx) = mpsc::channel(8);
+                Box::new(TraceSource).run(source_tx, cancel.clone()).await;
+
+                let (sink_tx, sink_rx) = mpsc::channel(8);
+                let mut transform = BasicTransform::new(PassThrough);
+                transform.set_node_ctx(NodeCtx::for_node(
+                    "trace",
+                    "trace/t0",
+                    NodeKind::Transform,
+                    metrics.clone(),
+                ));
+                Box::new(transform)
+                    .run(transform_rx, sink_tx, cancel.clone())
+                    .await;
+
+                let mut sink = ManagedSink::new(CaptureSink { seen: seen.clone() });
+                sink.set_node_ctx(NodeCtx::for_node(
+                    "trace",
+                    "trace/sink0",
+                    NodeKind::Sink,
+                    metrics,
+                ));
+                Box::new(sink).run(sink_rx, cancel).await;
+            });
+        });
+        provider.force_flush().unwrap();
+
+        let captured = seen.lock().unwrap().clone();
+        assert_eq!(captured.len(), 1);
+        assert!(
+            captured[0].meta.headers.contains_key(TRACEPARENT),
+            "sink should see refreshed trace context"
+        );
+
+        let spans = exporter.get_finished_spans().unwrap();
+        assert!(
+            spans.iter().any(|s| s.name == "courier.transform"),
+            "missing transform span: {spans:?}"
+        );
+        assert!(
+            spans.iter().any(|s| s.name == "courier.sink"),
+            "missing sink span: {spans:?}"
+        );
+        let incoming_trace_id = "4bf92f3577b34da6a3ce929d0e0e4736";
+        assert!(
+            spans
+                .iter()
+                .all(|s| s.span_context.trace_id().to_string() == incoming_trace_id),
+            "spans did not share incoming trace id: {spans:?}"
         );
     }
 }

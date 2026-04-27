@@ -4,9 +4,12 @@ use anyhow::Result;
 use async_trait::async_trait;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::envelope::Envelope;
 use crate::observability::NodeCtx;
+use crate::observability::trace_context;
 use crate::pipeline::ErrorPolicy;
 
 pub mod script;
@@ -92,12 +95,25 @@ impl<M: MapOne + 'static> Transform for BasicTransform<M> {
                 _ = cancel.cancelled() => break,
                 maybe = rx.recv() => {
                     let Some(env) = maybe else { break };
+                    let span = tracing::info_span!(
+                        "courier.transform",
+                        pipeline = %ctx.pipeline(),
+                        node_id = %ctx.node_id(),
+                        node_kind = %ctx.node_kind_str(),
+                        envelope.source_id = %env.meta.source_id,
+                        envelope.key = if ctx.log_keys() { env.meta.key.as_deref().unwrap_or("") } else { "" },
+                    );
+                    if let Some(parent) = trace_context::extract(&env.meta.headers) {
+                        let _ = span.set_parent(parent);
+                    }
+                    let span_context = span.context();
                     let started = Instant::now();
-                    let result = self.inner.map(env).await;
+                    let result = self.inner.map(env).instrument(span.clone()).await;
                     ctx.record_stage_duration_ms(started.elapsed().as_secs_f64() * 1000.0);
                     match result {
-                        Ok(Some(out)) => {
+                        Ok(Some(mut out)) => {
                             ctx.record_processed();
+                            trace_context::inject(&mut out.meta.headers, &span_context);
                             if tx.send(out).await.is_err() {
                                 tracing::debug!(node_id = %id, "downstream closed");
                                 return;

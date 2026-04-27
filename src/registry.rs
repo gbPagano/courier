@@ -201,16 +201,13 @@ impl Registry {
 
         let observability = config.observability.clone();
         let metrics = init_metrics(observability.as_ref())?;
-        let pipeline_obs = metrics.is_enabled().then_some(metrics.clone());
         let mut pipelines = Vec::with_capacity(config.pipelines.len());
         for spec in config.pipelines {
             let name = spec.name.clone();
             let mut pipeline = self
                 .build_pipeline(spec)
                 .with_context(|| format!("failed to build pipeline '{name}'"))?;
-            if let Some(handle) = &pipeline_obs {
-                pipeline = pipeline.with_observability(Some(handle.clone()));
-            }
+            pipeline = pipeline.with_observability(Some(metrics.clone()));
             pipelines.push(pipeline);
         }
         Ok(Courier::new(pipelines)

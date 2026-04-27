@@ -23,9 +23,10 @@ toml = "0.9.8"
 tracing = "0.1.41"
 tracing-log = "0.2.0"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "json"] }
-opentelemetry = { version = "0.31.0", features = ["metrics"] }
-opentelemetry_sdk = { version = "0.31.0", features = ["rt-tokio", "metrics"] }
-opentelemetry-otlp = { version = "0.31.1", default-features = false, features = ["grpc-tonic", "metrics"] }
+tracing-opentelemetry = "0.32.0"
+opentelemetry = { version = "0.31.0", features = ["metrics", "trace"] }
+opentelemetry_sdk = { version = "0.31.0", features = ["rt-tokio", "metrics", "trace"] }
+opentelemetry-otlp = { version = "0.31.1", default-features = false, features = ["grpc-tonic", "metrics", "trace"] }
 
 [dev-dependencies]
 opentelemetry_sdk = { version = "0.31.0", features = ["testing"] }

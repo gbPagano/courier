@@ -3,12 +3,14 @@ use std::time::Duration;
 use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
 use rdkafka::config::ClientConfig;
+use rdkafka::message::{Header, OwnedHeaders};
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::config::parse_config;
 use crate::envelope::Envelope;
+use crate::observability::trace_context::{TRACEPARENT, TRACESTATE};
 use crate::pipeline::ErrorPolicy;
 use crate::retry::RetryPolicy;
 use crate::sinks::{ManagedSink, Sink, WriteOne};
@@ -52,7 +54,21 @@ impl WriteOne for KafkaSink {
             .unwrap_or_else(|| env.meta.source_id.clone());
         let payload = serde_json::to_string(&env.payload)?;
 
-        let record = FutureRecord::to(&self.topic).key(&key).payload(&payload);
+        let mut record = FutureRecord::to(&self.topic).key(&key).payload(&payload);
+        let mut headers = OwnedHeaders::new();
+        let mut has_trace_headers = false;
+        for header_key in [TRACEPARENT, TRACESTATE] {
+            if let Some(value) = env.meta.headers.get(header_key) {
+                headers = headers.insert(Header {
+                    key: header_key,
+                    value: Some(value.as_str()),
+                });
+                has_trace_headers = true;
+            }
+        }
+        if has_trace_headers {
+            record = record.headers(headers);
+        }
         match self.producer.send(record, Duration::from_secs(0)).await {
             Ok(status) => {
                 log::debug!(

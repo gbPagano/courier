@@ -43,7 +43,13 @@ async fn main() -> ExitCode {
                 eprintln!("configuration invalid: {err:#}");
                 return ExitCode::FAILURE;
             }
-            courier::observability::init_from_config(cfg.observability.as_ref(), default_log_level);
+            if let Err(err) = courier::observability::init_from_config(
+                cfg.observability.as_ref(),
+                default_log_level,
+            ) {
+                eprintln!("failed to initialize observability: {err:#}");
+                return ExitCode::FAILURE;
+            }
 
             let courier = match cli::build_runtime_from_config(cfg, &path) {
                 Ok(courier) => courier,
@@ -58,7 +64,10 @@ async fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         CliCommand::Validate { config } => {
-            courier::observability::init_default_logging(default_log_level);
+            if let Err(err) = courier::observability::init_default_logging(default_log_level) {
+                eprintln!("failed to initialize logging: {err:#}");
+                return ExitCode::FAILURE;
+            }
             let path = cli::resolve_config_path(config);
             match cli::validate_config(&path) {
                 Ok(()) => {
@@ -72,7 +81,10 @@ async fn main() -> ExitCode {
             }
         }
         CliCommand::ListComponents => {
-            courier::observability::init_default_logging(default_log_level);
+            if let Err(err) = courier::observability::init_default_logging(default_log_level) {
+                eprintln!("failed to initialize logging: {err:#}");
+                return ExitCode::FAILURE;
+            }
             match Registry::with_builtins() {
                 Ok(registry) => {
                     print!("{}", cli::list_components(&registry));

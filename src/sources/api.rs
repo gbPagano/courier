@@ -10,6 +10,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::parse_config;
 use crate::envelope::Envelope;
+use crate::observability::{SendStopped, SourceCtx};
 use crate::retry::RetryPolicy;
 use crate::sources::Source;
 use crate::sources::retry::PollScheduler;
@@ -57,6 +58,7 @@ impl Source for ApiPollSource {
         ticker.tick().await; // first tick completes immediately
 
         log::info!("[{}] starting poll loop at {:?}", self.id, self.interval);
+        let source_ctx = SourceCtx::new(&self.id);
 
         loop {
             let start = Instant::now();
@@ -95,13 +97,12 @@ impl Source for ApiPollSource {
             log::debug!("[{}] fetch completed in {:?}", self.id, start.elapsed());
 
             let env = Envelope::new(&self.id, payload);
-            tokio::select! {
-                _ = cancel.cancelled() => return,
-                res = tx.send(env) => {
-                    if res.is_err() {
-                        log::info!("[{}] downstream closed, stopping", self.id);
-                        return;
-                    }
+            match source_ctx.send(&tx, env, &cancel).await {
+                Ok(()) => {}
+                Err(SendStopped::Cancelled) => return,
+                Err(SendStopped::DownstreamClosed) => {
+                    log::info!("[{}] downstream closed, stopping", self.id);
+                    return;
                 }
             }
 
