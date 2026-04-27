@@ -1,8 +1,8 @@
 # Local observability stack for Courier.
 #
 # Boots an OpenTelemetry Collector receiving OTLP from Courier, plus
-# Prometheus, Tempo, and Grafana preconfigured to read from both. Point
-# Courier's `[observability]` block at `http://localhost:4317`:
+# Prometheus, Tempo, Loki, and Grafana preconfigured to read from all
+# three. Point Courier's `[observability]` block at `http://localhost:4317`:
 #
 #   [observability.metrics]
 #   otlp_endpoint = "http://localhost:4317"
@@ -10,8 +10,13 @@
 #   [observability.tracing]
 #   otlp_endpoint = "http://localhost:4317"
 #
-# Then `docker compose -f docker-compose.observability.yml up -d` and
-# open Grafana at http://localhost:3000 (anonymous access enabled).
+#   [observability.logs]
+#   otlp_endpoint = "http://localhost:4317"
+#
+# Then `docker compose -f examples/docker-compose.observability.yml up -d` and
+# open Grafana at http://localhost:3000 (anonymous access enabled). Logs
+# show up under Explore → Loki, with the same `service.name` resource
+# attribute used by metrics and traces so they cross-correlate.
 #
 # Files referenced from this compose:
 #   ./otel-collector.yaml          — Collector config
@@ -29,6 +34,7 @@ services:
       - "9464:9464"   # Prometheus scrape endpoint
     depends_on:
       - tempo
+      - loki
 
   prometheus:
     image: prom/prometheus:v2.55.1
@@ -50,6 +56,15 @@ services:
       - source: tempo_config
         target: /etc/tempo.yaml
 
+  loki:
+    image: grafana/loki:3.2.1
+    command: ["-config.file=/etc/loki/config.yaml"]
+    ports:
+      - "3100:3100"   # Loki HTTP API + OTLP /otlp/v1/logs ingest
+    configs:
+      - source: loki_config
+        target: /etc/loki/config.yaml
+
   grafana:
     image: grafana/grafana:11.3.0
     ports:
@@ -68,6 +83,7 @@ services:
     depends_on:
       - prometheus
       - tempo
+      - loki
 
 configs:
   prometheus_config:
@@ -100,6 +116,44 @@ configs:
           wal:
             path: /var/tempo/wal
 
+  # Single-binary Loki tuned for a local dev stack: in-process WAL,
+  # filesystem chunk storage, no auth. The OTLP ingest endpoint
+  # `/otlp/v1/logs` is enabled by default in Loki >= 3.0.
+  loki_config:
+    content: |
+      auth_enabled: false
+      server:
+        http_listen_port: 3100
+      common:
+        path_prefix: /tmp/loki
+        replication_factor: 1
+        ring:
+          kvstore:
+            store: inmemory
+        instance_addr: 127.0.0.1
+      schema_config:
+        configs:
+          - from: 2024-01-01
+            store: tsdb
+            object_store: filesystem
+            schema: v13
+            index:
+              prefix: index_
+              period: 24h
+      storage_config:
+        tsdb_shipper:
+          active_index_directory: /tmp/loki/index
+          cache_location: /tmp/loki/index_cache
+        filesystem:
+          directory: /tmp/loki/chunks
+      limits_config:
+        # Required so trace_id / span_id arrive on each log line as
+        # structured metadata — that's what powers the Loki → Tempo
+        # "view trace" jump in Grafana. Loki >= 3.0 promotes the
+        # `service.name` resource attribute to an index label by default,
+        # so no extra mapping is needed.
+        allow_structured_metadata: true
+
   grafana_datasources:
     content: |
       apiVersion: 1
@@ -113,6 +167,10 @@ configs:
           type: tempo
           access: proxy
           url: http://tempo:3200
+        - name: Loki
+          type: loki
+          access: proxy
+          url: http://loki:3100
 
   grafana_dashboards:
     content: |

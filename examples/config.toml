@@ -1,5 +1,5 @@
 [observability]
-log_level  = "info"            # default filter when RUST_LOG is unset
+log_level  = "courier=debug"            # default filter when RUST_LOG is unset
 log_keys   = false             # allow meta.key in span fields (off by default)
 
 [observability.metrics]
@@ -10,6 +10,9 @@ export_interval_ms = 5000     # OTLP push interval (default 15 s)
 otlp_endpoint = "http://localhost:4317"
 sample_ratio  = 1.0            # parent-based sampling (0.0–1.0)
 service_name  = "courier"      # OTel resource service.name
+
+[observability.logs]
+otlp_endpoint = "http://localhost:4317"   # bridge tracing events to OTLP logs
 
 [[pipelines]]
 name = "api->csv"

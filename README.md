@@ -23,7 +23,7 @@ Jump in:
 - [Components](https://gbpagano.github.io/courier/components/) — built-in sources, transforms, sinks
 - [Scripting](https://gbpagano.github.io/courier/scripting/) — Rhai, Lua, and Python transforms
 - [Architecture](https://gbpagano.github.io/courier/concepts/architecture/) — internals and design
-- [Observability](https://gbpagano.github.io/courier/concepts/observability/) — logs, metrics, and traces over OTLP (sample [Collector config](otel-collector.yaml), [Compose stack](docker-compose.observability.yml), and [Grafana dashboard](dashboards/courier.json))
+- [Observability](https://gbpagano.github.io/courier/concepts/observability/) — logs, metrics, and traces over OTLP (sample [Collector config](examples/otel-collector.yaml), [Compose stack](examples/docker-compose.observability.yml), and [Grafana dashboard](examples/dashboards/courier.json))
 
 ## Quick example
 

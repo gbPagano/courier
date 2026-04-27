@@ -1,11 +1,12 @@
 # Reference OpenTelemetry Collector configuration for Courier.
 #
 # Receives OTLP from Courier (gRPC :4317 and HTTP :4318), re-exposes a
-# Prometheus scrape endpoint on :9464, and forwards traces to Tempo over
-# OTLP/gRPC. Swap the trace exporter block for `jaeger` if you prefer
-# Jaeger; both are documented inline below.
+# Prometheus scrape endpoint on :9464, forwards traces to Tempo over
+# OTLP/gRPC, and ships logs to Loki via OTLP/HTTP. Swap the trace
+# exporter block for `jaeger` if you prefer Jaeger; both are documented
+# inline below.
 #
-# Used by docker-compose.observability.yml. Mount this file at
+# Used by examples/docker-compose.observability.yml. Mount this file at
 # /etc/otelcol-contrib/config.yaml inside the collector container.
 
 receivers:
@@ -52,6 +53,12 @@ exporters:
   #   tls:
   #     insecure: true
 
+  # Log backend — Loki. Loki accepts OTLP logs natively at
+  # /otlp/v1/logs (since v3.0); the contrib collector ships an `otlphttp`
+  # exporter that targets exactly that path.
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
+
   # Optional: stdout for quick local debugging.
   debug:
     verbosity: basic
@@ -73,4 +80,4 @@ service:
     logs:
       receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters: [debug]
+      exporters: [otlphttp/loki]

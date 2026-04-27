@@ -28,6 +28,15 @@
         }
       },
       {
+        "name": "loki_datasource",
+        "type": "datasource",
+        "query": "loki",
+        "current": {
+          "text": "Loki",
+          "value": "Loki"
+        }
+      },
+      {
         "name": "pipeline",
         "type": "query",
         "datasource": {
@@ -275,6 +284,83 @@
         {
           "expr": "sum(rate(courier_envelopes_filtered_total{pipeline=~\"$pipeline\"}[5m])) / clamp_min(sum(rate(courier_envelopes_filtered_total{pipeline=~\"$pipeline\"}[5m])) + sum(rate(courier_envelopes_processed_total{pipeline=~\"$pipeline\"}[5m])), 1)",
           "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "row",
+      "title": "Logs",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 30 },
+      "panels": []
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Log volume by severity (1m rate)",
+      "description": "Counts log lines from Courier grouped by severity. Sourced from Loki via the OTLP appender — `severity_text` arrives as structured metadata on each line.",
+      "datasource": { "type": "loki", "uid": "${loki_datasource}" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 31 },
+      "fieldConfig": {
+        "defaults": { "unit": "logs/sec" },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum by (severity_text) (rate({service_name=\"courier\"} | severity_text != \"\" [1m]))",
+          "legendFormat": "{{severity_text}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "logs",
+      "title": "Recent log lines",
+      "description": "Live tail of Courier log events from Loki. Click a line to expand structured metadata (trace_id, node_id, pipeline, error chain) and jump to the matching trace in Tempo.",
+      "datasource": { "type": "loki", "uid": "${loki_datasource}" },
+      "gridPos": { "h": 14, "w": 24, "x": 0, "y": 39 },
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "showCommonLabels": false,
+        "wrapLogMessage": true,
+        "prettifyLogMessage": false,
+        "enableLogDetails": true,
+        "dedupStrategy": "none",
+        "sortOrder": "Descending"
+      },
+      "targets": [
+        {
+          "expr": "{service_name=\"courier\"}",
+          "refId": "A",
+          "maxLines": 500
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "logs",
+      "title": "Errors and retries",
+      "description": "Filtered tail of warn/error events. Tweak the filter (e.g. add `|= \"dead_letter\"` or `| pipeline=\"api->csv\"`) directly in panel edit mode.",
+      "datasource": { "type": "loki", "uid": "${loki_datasource}" },
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 53 },
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "showCommonLabels": false,
+        "wrapLogMessage": true,
+        "prettifyLogMessage": false,
+        "enableLogDetails": true,
+        "dedupStrategy": "none",
+        "sortOrder": "Descending"
+      },
+      "targets": [
+        {
+          "expr": "{service_name=\"courier\"} | severity_text =~ \"WARN|ERROR\"",
+          "refId": "A",
+          "maxLines": 200
         }
       ]
     }

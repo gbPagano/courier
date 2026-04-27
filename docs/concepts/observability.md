@@ -36,6 +36,9 @@ export_interval_ms = 15000     # OTLP push interval (default 15 s)
 otlp_endpoint = "http://collector:4317"
 sample_ratio  = 0.1            # parent-based sampling (0.0–1.0)
 service_name  = "courier"      # OTel resource service.name
+
+[observability.logs]
+otlp_endpoint = "http://collector:4317"   # bridge tracing events to OTLP logs
 ```
 
 Precedence rules:
@@ -43,6 +46,7 @@ Precedence rules:
 - `RUST_LOG` always wins over `log_level`, matching Courier's prior `env_logger` behavior.
 - `metrics.otlp_endpoint = ""` (or unset) disables metric export — counters and histograms still exist in-process but observations are dropped to a private no-op meter.
 - `tracing.otlp_endpoint = ""` (or unset) disables span export the same way.
+- `logs.otlp_endpoint = ""` (or unset) disables OTLP log export — events still flow to stderr through the local fmt layer.
 
 Validation runs at startup: `sample_ratio` must be a finite value in `[0.0, 1.0]`, `service_name` must be non-empty, `export_interval_ms` must be greater than zero, and `log_level` must be a valid `EnvFilter` directive. Bad values fail `courier validate` and `courier run` with a path-annotated error.
 
@@ -62,6 +66,19 @@ Every span and event carries the same canonical fields:
 | `error`                | Stringified error chain on failure / retry / dead-letter logs. |
 
 Payloads and arbitrary header values are never logged. This is enforced as a privacy default: `tracing` calls in the runtime never reference `env.payload`, and `meta.key` only flows into a span when an operator opts in.
+
+### OTLP log export
+
+Set `[observability.logs].otlp_endpoint` to forward every `tracing` event as an OpenTelemetry `LogRecord` over OTLP/gRPC. The bridge is additive — local stderr output via the fmt layer is untouched — so operators can keep `kubectl logs` working while shipping the same lines to a backend.
+
+```toml
+[observability.logs]
+otlp_endpoint = "http://collector:4317"
+```
+
+The exporter shares the `service_name` resource attribute with metrics and traces, and each emitted log record automatically carries the active span's `trace_id` / `span_id` (Loki, Datadog, etc. show this as structured metadata you can pivot on). `LOGGER_PROVIDER` is force-flushed and shut down alongside the metrics and tracer providers in the SIGINT path, so the last batch is not lost.
+
+The reference Collector ships logs to **Loki** via OTLP/HTTP (`/otlp/v1/logs`); see [Sample Compose stack](#sample-compose-stack) below for how to query them in Grafana.
 
 ## Metrics
 
@@ -116,7 +133,7 @@ Sampling is parent-based with the configured `sample_ratio` at root. A non-sampl
 
 ## Sample Collector { #sample-collector }
 
-A reference Collector config lives at [`otel-collector.yaml`](https://github.com/gbPagano/courier/blob/main/otel-collector.yaml) at the repo root. It receives OTLP/gRPC and OTLP/HTTP from Courier, re-exposes a Prometheus scrape endpoint on `:9464`, and forwards traces to Tempo (or, by uncommenting a single block, Jaeger):
+A reference Collector config lives at [`examples/otel-collector.yaml`](https://github.com/gbPagano/courier/blob/main/examples/otel-collector.yaml). It receives OTLP/gRPC and OTLP/HTTP from Courier, re-exposes a Prometheus scrape endpoint on `:9464`, forwards traces to Tempo (or, by uncommenting a single block, Jaeger), and ships logs to Loki via OTLP/HTTP:
 
 ```yaml
 receivers:
@@ -131,6 +148,8 @@ exporters:
   otlp/tempo:
     endpoint: tempo:4317
     tls: { insecure: true }
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
 
 service:
   pipelines:
@@ -140,25 +159,59 @@ service:
     traces:
       receivers: [otlp]
       exporters: [otlp/tempo]
+    logs:
+      receivers: [otlp]
+      exporters: [otlphttp/loki]
 ```
 
 Point Courier's `otlp_endpoint` at `http://<collector>:4317` and Prometheus at `http://<collector>:9464/metrics` to scrape Courier through the Collector.
 
 ## Sample Compose stack { #sample-compose-stack }
 
-The repository's [`docker-compose.observability.yml`](https://github.com/gbPagano/courier/blob/main/docker-compose.observability.yml) boots a full local stack you can point Courier at:
+The repository's [`examples/docker-compose.observability.yml`](https://github.com/gbPagano/courier/blob/main/examples/docker-compose.observability.yml) boots a full local stack you can point Courier at:
 
 - **otel-collector** on `4317`/`4318` (OTLP) and `9464` (Prometheus scrape)
 - **prometheus** scraping the Collector
 - **tempo** receiving traces over OTLP
-- **grafana** preconfigured with both datasources and the bundled [`dashboards/courier.json`](https://github.com/gbPagano/courier/blob/main/dashboards/courier.json)
+- **loki** receiving logs over OTLP/HTTP
+- **grafana** preconfigured with all three datasources and the bundled [`examples/dashboards/courier.json`](https://github.com/gbPagano/courier/blob/main/examples/dashboards/courier.json)
 
-Boot it, set `otlp_endpoint = "http://localhost:4317"` in your Courier config, drive traffic, and open Grafana on `http://localhost:3000`.
+Set every signal's endpoint to the Collector and boot the stack:
+
+```toml title="config.toml"
+[observability]
+log_format = "json"
+
+[observability.metrics]
+otlp_endpoint = "http://localhost:4317"
+
+[observability.tracing]
+otlp_endpoint = "http://localhost:4317"
+
+[observability.logs]
+otlp_endpoint = "http://localhost:4317"
+```
 
 ```bash
-docker compose -f docker-compose.observability.yml up -d
-COURIER_CONFIG=config.toml cargo run -- run
+docker compose -f examples/docker-compose.observability.yml up -d
+COURIER_CONFIG=examples/config.toml cargo run -- run
 ```
+
+### Viewing logs in Grafana
+
+1. Open Grafana at `http://localhost:3000` (anonymous admin is enabled).
+2. Go to **Explore** and select the **Loki** datasource.
+3. Run `{service_name="courier"}` to see every line Courier emits. Add `|= "error"` to grep, or `| json` to break out structured fields like `node_id`, `pipeline`, `error`.
+4. Each log line carries `trace_id` as structured metadata — click it to jump straight to the matching trace in Tempo without leaving the line.
+
+Useful starter queries:
+
+| Query                                                                  | What it shows                                       |
+| ---------------------------------------------------------------------- | --------------------------------------------------- |
+| `{service_name="courier"}`                                             | All Courier logs.                                   |
+| `{service_name="courier"} \|= "retry"`                                 | Retry warnings from `write_with_retry`.             |
+| `{service_name="courier"} \|= "dead_letter"`                           | Envelopes routed to the dead-letter sink.           |
+| `{service_name="courier"} \| json \| node_kind="sink" \| level="ERROR"` | Sink failures, broken out by structured field.      |
 
 ## Field reference
 
