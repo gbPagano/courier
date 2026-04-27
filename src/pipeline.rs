@@ -1,11 +1,19 @@
-use tokio::sync::mpsc;
+use std::time::Duration;
+
+use tokio::sync::mpsc::{self, WeakSender};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::envelope::Envelope;
+use crate::observability::{NodeCtx, NodeKind, ObsHandle};
 use crate::sinks::Sink;
 use crate::sources::Source;
 use crate::transforms::Transform;
+
+/// How often the per-edge channel-depth sampler reports the gauge.
+/// 300ms is dense enough to catch transient backpressure spikes
+/// without burning cycles when the pipeline is idle.
+const CHANNEL_DEPTH_SAMPLE_INTERVAL: Duration = Duration::from_millis(300);
 
 /// What to do when a `Transform` or `Sink` returns `Err`.
 ///
@@ -30,6 +38,12 @@ pub struct Pipeline {
     pub transforms: Vec<Box<dyn Transform>>,
     pub sinks: Vec<Box<dyn Sink>>,
     pub channel_capacity: usize,
+    /// Optional shared metrics handle. `Registry::build_courier`
+    /// attaches this from the courier-wide `ObsHandle`; tests that
+    /// build pipelines manually leave it `None`, which means every
+    /// node falls back to `NodeCtx::noop()` (i.e. instrumentation is
+    /// silent).
+    pub(crate) obs: Option<ObsHandle>,
 }
 
 impl Pipeline {
@@ -40,6 +54,7 @@ impl Pipeline {
             transforms: Vec::new(),
             sinks: Vec::new(),
             channel_capacity: 64,
+            obs: None,
         }
     }
 
@@ -57,39 +72,100 @@ impl Pipeline {
         self.channel_capacity = cap;
         self
     }
+
+    pub fn with_observability(mut self, obs: Option<ObsHandle>) -> Self {
+        self.obs = obs;
+        self
+    }
 }
 
 /// Wires source → transforms → sinks with mpsc channels and spawns each
 /// node as its own tokio task. When `sinks.len() > 1`, an implicit
 /// broadcast splitter is inserted. The splitter is synchronous per sink:
 /// a slow sink applies backpressure to the whole pipeline.
+///
+/// When the pipeline carries an `ObsHandle`, this function also:
+/// - mints a `NodeCtx` per transform/sink and attaches it via
+///   `set_node_ctx`, so the wrapper runtimes can bump counters in
+///   their hot loops without hashmap lookups,
+/// - spawns one channel-depth sampler task per mpsc edge that
+///   reports `courier_channel_capacity_used` every 300ms until the
+///   shared cancel token fires.
 pub(crate) fn spawn_pipeline(p: Pipeline, cancel: CancellationToken) -> Vec<JoinHandle<()>> {
     let Pipeline {
         id,
         source,
-        transforms,
-        sinks,
+        mut transforms,
+        mut sinks,
         channel_capacity: cap,
+        obs,
     } = p;
 
-    log::info!("[{id}] spawning pipeline");
+    tracing::info!(pipeline = %id, "spawning pipeline");
     let mut handles = Vec::new();
 
     let (src_tx, mut prev_rx) = mpsc::channel::<Envelope>(cap);
+    let mut prev_node_id = format!("{id}/src");
+    let transforms_total = transforms.len();
+
+    // Source-out edge sampler.
+    if let Some(handle) = &obs {
+        spawn_edge_sampler(
+            &id,
+            &prev_node_id,
+            &next_transform_or_sink_id(&id, &transforms, &sinks),
+            cap,
+            src_tx.downgrade(),
+            handle.clone(),
+            cancel.clone(),
+            &mut handles,
+        );
+    }
+
     let c = cancel.clone();
     handles.push(tokio::spawn(async move { source.run(src_tx, c).await }));
 
-    for t in transforms {
+    for (i, mut t) in transforms.drain(..).enumerate() {
+        let node_id = format!("{id}/t{i}");
+        if let Some(handle) = &obs {
+            t.set_node_ctx(NodeCtx::for_node(
+                &id,
+                &node_id,
+                NodeKind::Transform,
+                handle.clone(),
+            ));
+        }
+
         let (next_tx, next_rx) = mpsc::channel::<Envelope>(cap);
+
+        // Edge from this transform to the next stage.
+        if let Some(handle) = &obs {
+            let dest_node_id = transform_or_sink_id_after(&id, i + 1, transforms_total, &sinks);
+            spawn_edge_sampler(
+                &id,
+                &node_id,
+                &dest_node_id,
+                cap,
+                next_tx.downgrade(),
+                handle.clone(),
+                cancel.clone(),
+                &mut handles,
+            );
+        }
+
         let rx = prev_rx;
         let c = cancel.clone();
         handles.push(tokio::spawn(async move { t.run(rx, next_tx, c).await }));
         prev_rx = next_rx;
+        prev_node_id = node_id;
     }
 
     match sinks.len() {
         0 => {
-            log::warn!("[{id}] pipeline has no sinks, envelopes will be discarded");
+            tracing::warn!(
+                pipeline = %id,
+                "pipeline has no sinks; envelopes will be discarded"
+            );
             let c = cancel.clone();
             handles.push(tokio::spawn(async move {
                 loop {
@@ -101,20 +177,52 @@ pub(crate) fn spawn_pipeline(p: Pipeline, cancel: CancellationToken) -> Vec<Join
             }));
         }
         1 => {
-            let sink = sinks.into_iter().next().unwrap();
+            let mut sink = sinks.into_iter().next().unwrap();
+            let sink_node_id = format!("{id}/sink0");
+            if let Some(handle) = &obs {
+                sink.set_node_ctx(NodeCtx::for_node(
+                    &id,
+                    &sink_node_id,
+                    NodeKind::Sink,
+                    handle.clone(),
+                ));
+            }
             let c = cancel.clone();
             handles.push(tokio::spawn(async move { sink.run(prev_rx, c).await }));
+            let _ = prev_node_id; // last edge already sampled above
         }
         _ => {
+            let splitter_id = format!("{id}/broadcast");
             let mut sink_txs = Vec::with_capacity(sinks.len());
-            for sink in sinks {
+            for (i, mut sink) in sinks.drain(..).enumerate() {
+                let sink_node_id = format!("{id}/sink{i}");
+                if let Some(handle) = &obs {
+                    sink.set_node_ctx(NodeCtx::for_node(
+                        &id,
+                        &sink_node_id,
+                        NodeKind::Sink,
+                        handle.clone(),
+                    ));
+                }
                 let (tx, rx) = mpsc::channel::<Envelope>(cap);
+                if let Some(handle) = &obs {
+                    spawn_edge_sampler(
+                        &id,
+                        &splitter_id,
+                        &sink_node_id,
+                        cap,
+                        tx.downgrade(),
+                        handle.clone(),
+                        cancel.clone(),
+                        &mut handles,
+                    );
+                }
                 sink_txs.push(tx);
                 let c = cancel.clone();
                 handles.push(tokio::spawn(async move { sink.run(rx, c).await }));
             }
             let c = cancel.clone();
-            let splitter_id = format!("{id}/broadcast");
+            let splitter_log_id = splitter_id.clone();
             handles.push(tokio::spawn(async move {
                 loop {
                     tokio::select! {
@@ -123,7 +231,7 @@ pub(crate) fn spawn_pipeline(p: Pipeline, cancel: CancellationToken) -> Vec<Join
                             let Some(env) = maybe else { break };
                             for tx in &sink_txs {
                                 if tx.send(env.clone()).await.is_err() {
-                                    log::debug!("[{splitter_id}] downstream sink closed");
+                                    tracing::debug!(node_id = %splitter_log_id, "downstream sink closed");
                                 }
                             }
                         }
@@ -134,4 +242,210 @@ pub(crate) fn spawn_pipeline(p: Pipeline, cancel: CancellationToken) -> Vec<Join
     }
 
     handles
+}
+
+/// First downstream node id from the source's perspective: either the
+/// first transform (if any) or `sink0`/`broadcast` depending on the
+/// sink count. Used purely to label the source-out edge gauge.
+fn next_transform_or_sink_id(
+    id: &str,
+    transforms: &[Box<dyn Transform>],
+    sinks: &[Box<dyn Sink>],
+) -> String {
+    if !transforms.is_empty() {
+        format!("{id}/t0")
+    } else if sinks.len() > 1 {
+        format!("{id}/broadcast")
+    } else {
+        format!("{id}/sink0")
+    }
+}
+
+/// Edge destination for the `i`-th transform's downstream edge:
+/// either the next transform or the first sink/splitter.
+fn transform_or_sink_id_after(
+    id: &str,
+    next_index: usize,
+    total_transforms: usize,
+    sinks: &[Box<dyn Sink>],
+) -> String {
+    if next_index < total_transforms {
+        format!("{id}/t{next_index}")
+    } else if sinks.len() > 1 {
+        format!("{id}/broadcast")
+    } else {
+        format!("{id}/sink0")
+    }
+}
+
+/// Spawn a periodic task that samples how many slots are currently
+/// in use on `tx`'s buffer and records the result on
+/// `courier_channel_capacity_used`. Holds a clone of `tx` purely as a
+/// capacity probe — never sends — so it doesn't perturb the pipeline.
+#[allow(clippy::too_many_arguments)]
+fn spawn_edge_sampler(
+    pipeline: &str,
+    src_node_id: &str,
+    dest_node_id: &str,
+    capacity: usize,
+    tx: WeakSender<Envelope>,
+    handle: ObsHandle,
+    cancel: CancellationToken,
+    handles: &mut Vec<JoinHandle<()>>,
+) {
+    let edge_id = format!(
+        "{pipeline}/edge/{}->{}",
+        short_node_id(pipeline, src_node_id),
+        short_node_id(pipeline, dest_node_id)
+    );
+    let ctx = NodeCtx::for_node(pipeline, &edge_id, NodeKind::Edge, handle);
+    handles.push(tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(CHANNEL_DEPTH_SAMPLE_INTERVAL);
+        // Skip the immediate first tick — first sample after one full
+        // interval avoids reporting "0 used" before the source even
+        // emits.
+        ticker.tick().await;
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => break,
+                _ = ticker.tick() => {
+                    let Some(tx) = tx.upgrade() else {
+                        break;
+                    };
+                    let used = capacity.saturating_sub(tx.capacity()) as u64;
+                    ctx.record_channel_capacity_used(used);
+                    // Quit once the channel is closed downstream — at
+                    // that point the gauge is meaningless.
+                    if tx.is_closed() {
+                        break;
+                    }
+                }
+            }
+        }
+    }));
+}
+
+fn short_node_id<'a>(pipeline: &str, node_id: &'a str) -> &'a str {
+    node_id
+        .strip_prefix(pipeline)
+        .and_then(|s| s.strip_prefix('/'))
+        .unwrap_or(node_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use anyhow::Result;
+    use async_trait::async_trait;
+    use futures::future::join_all;
+    use serde_json::json;
+    use tokio::sync::mpsc::Sender;
+
+    use super::*;
+    use crate::observability::metrics::testing::{
+        counter_sum, histogram_count, obs_handle_in_memory,
+    };
+    use crate::sinks::{ManagedSink, WriteOne};
+    use crate::transforms::{BasicTransform, MapOne};
+
+    struct HundredSource;
+
+    #[async_trait]
+    impl Source for HundredSource {
+        fn id(&self) -> &str {
+            "src"
+        }
+
+        async fn run(self: Box<Self>, tx: Sender<Envelope>, _cancel: CancellationToken) {
+            for i in 0..100 {
+                if tx
+                    .send(Envelope::new("src", json!({ "n": i })))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }
+    }
+
+    struct EvenOnly;
+
+    #[async_trait]
+    impl MapOne for EvenOnly {
+        fn id(&self) -> &str {
+            "even_only"
+        }
+
+        async fn map(&self, env: Envelope) -> Result<Option<Envelope>> {
+            let n = env.payload["n"].as_i64().unwrap();
+            Ok((n % 2 == 0).then_some(env))
+        }
+    }
+
+    struct AcceptSink;
+
+    #[async_trait]
+    impl WriteOne for AcceptSink {
+        fn id(&self) -> &str {
+            "accept"
+        }
+
+        async fn write(&self, _env: &Envelope) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn node_ctx_records_pipeline_metrics() {
+        let (handle, exporter) = obs_handle_in_memory();
+        let pipeline = Pipeline::new("metrics", Box::new(HundredSource))
+            .with_observability(Some(handle.clone()))
+            .with_transform(Box::new(BasicTransform::new(EvenOnly)))
+            .with_sink(Box::new(ManagedSink::new(AcceptSink)));
+
+        let handles = spawn_pipeline(pipeline, CancellationToken::new());
+        join_all(handles).await;
+        handle.shutdown();
+
+        assert_eq!(
+            counter_sum(
+                &exporter,
+                "courier_envelopes_processed_total",
+                &[("pipeline", "metrics"), ("node_id", "metrics/t0")]
+            ),
+            50
+        );
+        assert_eq!(
+            counter_sum(
+                &exporter,
+                "courier_envelopes_filtered_total",
+                &[("pipeline", "metrics"), ("node_id", "metrics/t0")]
+            ),
+            50
+        );
+        assert_eq!(
+            counter_sum(
+                &exporter,
+                "courier_envelopes_processed_total",
+                &[("pipeline", "metrics"), ("node_id", "metrics/sink0")]
+            ),
+            50
+        );
+        assert_eq!(
+            histogram_count(
+                &exporter,
+                "courier_stage_duration_milliseconds",
+                &[("pipeline", "metrics"), ("node_id", "metrics/t0")]
+            ),
+            100
+        );
+        assert_eq!(
+            histogram_count(
+                &exporter,
+                "courier_stage_duration_milliseconds",
+                &[("pipeline", "metrics"), ("node_id", "metrics/sink0")]
+            ),
+            50
+        );
+    }
 }

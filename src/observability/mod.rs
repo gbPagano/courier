@@ -1,9 +1,14 @@
 //! Observability primitives for the Courier runtime.
 //!
-//! Today this owns the logging facade: a `tracing-subscriber` layered
-//! with `EnvFilter`, plus `tracing-log::LogTracer` so the existing
-//! `log::` call sites flow through the same subscriber. Metrics, tracing,
-//! and OTLP export are added in subsequent PRs (see OBSERVABILITY_PLAN.md).
+//! - [`init_default_logging`] / [`init_from_config`] install the global
+//!   `tracing-subscriber` (text or JSON) plus the `log` → `tracing`
+//!   bridge, so the codebase's existing `log::` call sites flow through
+//!   the same pipeline.
+//! - [`metrics::ObsHandle`] / [`metrics::NodeCtx`] own the OpenTelemetry
+//!   metrics SDK wiring and pre-bind counters/histograms per node.
+//!
+//! W3C trace-context propagation and OTLP traces ship in PR 4 (see
+//! `OBSERVABILITY_PLAN.md`).
 
 use std::sync::Once;
 
@@ -11,6 +16,10 @@ use tracing_log::LogTracer;
 use tracing_subscriber::{EnvFilter, fmt};
 
 use crate::config::{LogFormat, ObservabilityConfig};
+
+pub mod metrics;
+
+pub use metrics::{NodeCtx, NodeKind, ObsHandle, init_metrics};
 
 static INIT: Once = Once::new();
 

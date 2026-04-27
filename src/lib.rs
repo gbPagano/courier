@@ -9,6 +9,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::ObservabilityConfig;
+use crate::observability::ObsHandle;
 
 pub mod cli;
 pub mod config;
@@ -36,6 +37,7 @@ pub struct Courier {
     /// providers on shutdown without changing this signature again.
     /// `None` means "use built-in defaults".
     observability: Option<ObservabilityConfig>,
+    metrics: ObsHandle,
 }
 
 impl Courier {
@@ -43,6 +45,7 @@ impl Courier {
         Self {
             pipelines,
             observability: None,
+            metrics: ObsHandle::noop(),
         }
     }
 
@@ -58,6 +61,11 @@ impl Courier {
         self.observability.as_ref()
     }
 
+    pub(crate) fn with_metrics(mut self, metrics: ObsHandle) -> Self {
+        self.metrics = metrics;
+        self
+    }
+
     /// Spawn every pipeline as tokio tasks under the given cancel token.
     /// Caller is responsible for awaiting the returned handles and firing
     /// the token on shutdown. `run` wraps this with a SIGINT handler.
@@ -71,13 +79,16 @@ impl Courier {
 
     pub async fn run(self) {
         let cancel = CancellationToken::new();
+        let metrics = self.metrics.clone();
 
         let signal_cancel = cancel.clone();
+        let signal_metrics = metrics.clone();
         tokio::spawn(async move {
             match tokio::signal::ctrl_c().await {
                 Ok(_) => {
                     log::info!("received shutdown signal, cancelling pipelines");
                     signal_cancel.cancel();
+                    signal_metrics.force_flush();
                 }
                 Err(e) => log::error!("failed to listen for shutdown signal: {e}"),
             }
@@ -85,5 +96,6 @@ impl Courier {
 
         let handles = self.spawn(cancel);
         future::join_all(handles).await;
+        metrics.shutdown();
     }
 }

@@ -2,30 +2,45 @@ use anyhow::Result;
 use tokio::io::AsyncWriteExt;
 
 use crate::envelope::Envelope;
+use crate::observability::NodeCtx;
 use crate::retry::{ExhaustedPolicy, RetryPolicy};
 use crate::sinks::WriteOne;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WriteOutcome {
+    Written,
+    DeadLettered,
+}
+
 /// Attempts to write `env` via `inner`, retrying on failure according to
 /// `policy`. Called by `ManagedSink` when a retry policy is configured.
+///
+/// Bumps `ctx.record_retry()` once per retry attempt (i.e. not on the
+/// first try, only on attempts 2..N), and `ctx.record_dead_letter()`
+/// when the policy successfully routes an exhausted envelope to a
+/// dead-letter file.
 pub(crate) async fn write_with_retry<W: WriteOne>(
     inner: &W,
     env: &Envelope,
     policy: &RetryPolicy,
-) -> Result<()> {
+    ctx: &NodeCtx,
+) -> Result<WriteOutcome> {
     for attempt in 0..policy.max_attempts {
         match inner.write(env).await {
-            Ok(()) => return Ok(()),
+            Ok(()) => return Ok(WriteOutcome::Written),
             Err(e) if attempt + 1 == policy.max_attempts => {
-                return on_exhausted(inner.id(), env, e, &policy.on_exhausted).await;
+                return on_exhausted(inner.id(), env, e, &policy.on_exhausted, ctx).await;
             }
             Err(e) => {
                 let delay = policy.delay_for(attempt);
-                log::warn!(
-                    "[{}] write failed (attempt {}/{}), retrying in {}ms: {e:#}",
-                    inner.id(),
-                    attempt + 1,
-                    policy.max_attempts,
-                    delay.as_millis(),
+                ctx.record_retry();
+                tracing::warn!(
+                    node_id = %inner.id(),
+                    attempt = attempt + 1,
+                    max_attempts = policy.max_attempts,
+                    delay_ms = delay.as_millis() as u64,
+                    error = %e,
+                    "write failed, retrying"
                 );
                 tokio::time::sleep(delay).await;
             }
@@ -39,7 +54,8 @@ async fn on_exhausted(
     env: &Envelope,
     err: anyhow::Error,
     policy: &ExhaustedPolicy,
-) -> Result<()> {
+    ctx: &NodeCtx,
+) -> Result<WriteOutcome> {
     match policy {
         ExhaustedPolicy::Propagate => Err(err),
         ExhaustedPolicy::DeadLetter { path } => {
@@ -67,16 +83,20 @@ async fn on_exhausted(
 
             match io_result {
                 Ok(()) => {
-                    log::warn!(
-                        "[{id}] all retries exhausted — envelope dead-lettered to {}",
-                        path.display(),
+                    ctx.record_dead_letter();
+                    tracing::warn!(
+                        node_id = %id,
+                        path = %path.display(),
+                        "all retries exhausted, envelope dead-lettered"
                     );
-                    Ok(())
+                    Ok(WriteOutcome::DeadLettered)
                 }
                 Err(io_err) => {
-                    log::error!(
-                        "[{id}] failed to persist dead-letter entry to {}: {io_err}",
-                        path.display(),
+                    tracing::error!(
+                        node_id = %id,
+                        path = %path.display(),
+                        error = %io_err,
+                        "failed to persist dead-letter entry"
                     );
                     Err(err)
                 }
@@ -96,6 +116,8 @@ mod tests {
 
     use super::*;
     use crate::envelope::Envelope;
+    use crate::observability::metrics::testing::{counter_sum, obs_handle_in_memory};
+    use crate::observability::{NodeCtx, NodeKind};
     use crate::retry::ExhaustedPolicy;
 
     struct CountingWriter {
@@ -145,7 +167,11 @@ mod tests {
         let (w, calls) = writer(0);
         let policy = fast_policy(3, ExhaustedPolicy::Propagate);
         let env = Envelope::new("src", json!({}));
-        assert!(write_with_retry(&w, &env, &policy).await.is_ok());
+        assert!(
+            write_with_retry(&w, &env, &policy, &NodeCtx::noop())
+                .await
+                .is_ok()
+        );
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
@@ -154,8 +180,35 @@ mod tests {
         let (w, calls) = writer(2);
         let policy = fast_policy(3, ExhaustedPolicy::Propagate);
         let env = Envelope::new("src", json!({}));
-        assert!(write_with_retry(&w, &env, &policy).await.is_ok());
+        assert_eq!(
+            write_with_retry(&w, &env, &policy, &NodeCtx::noop())
+                .await
+                .unwrap(),
+            WriteOutcome::Written
+        );
         assert_eq!(calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn records_retry_attempts() {
+        let (handle, exporter) = obs_handle_in_memory();
+        let ctx = NodeCtx::for_node("p", "p/sink0", NodeKind::Sink, handle.clone());
+        let (w, calls) = writer(2);
+        let policy = fast_policy(3, ExhaustedPolicy::Propagate);
+        let env = Envelope::new("src", json!({}));
+
+        write_with_retry(&w, &env, &policy, &ctx).await.unwrap();
+        handle.shutdown();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        assert_eq!(
+            counter_sum(
+                &exporter,
+                "courier_retries_total",
+                &[("pipeline", "p"), ("node_id", "p/sink0")]
+            ),
+            2
+        );
     }
 
     #[tokio::test]
@@ -163,7 +216,11 @@ mod tests {
         let (w, calls) = writer(5);
         let policy = fast_policy(3, ExhaustedPolicy::Propagate);
         let env = Envelope::new("src", json!({}));
-        assert!(write_with_retry(&w, &env, &policy).await.is_err());
+        assert!(
+            write_with_retry(&w, &env, &policy, &NodeCtx::noop())
+                .await
+                .is_err()
+        );
         assert_eq!(calls.load(Ordering::SeqCst), 3);
     }
 
@@ -177,7 +234,12 @@ mod tests {
         let mut env = Envelope::new("src", json!({"x": 1}));
         env.meta.key = Some("k1".into());
 
-        assert!(write_with_retry(&w, &env, &policy).await.is_ok());
+        assert_eq!(
+            write_with_retry(&w, &env, &policy, &NodeCtx::noop())
+                .await
+                .unwrap(),
+            WriteOutcome::DeadLettered
+        );
         assert_eq!(calls.load(Ordering::SeqCst), 2);
 
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -194,6 +256,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn records_dead_lettered_envelope() {
+        let (handle, exporter) = obs_handle_in_memory();
+        let ctx = NodeCtx::for_node("p", "p/sink0", NodeKind::Sink, handle.clone());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dead.jsonl");
+        let (w, _) = writer(5);
+        let policy = fast_policy(1, ExhaustedPolicy::DeadLetter { path });
+        let env = Envelope::new("src", json!({}));
+
+        write_with_retry(&w, &env, &policy, &ctx).await.unwrap();
+        handle.shutdown();
+
+        assert_eq!(
+            counter_sum(
+                &exporter,
+                "courier_dead_lettered_total",
+                &[("pipeline", "p"), ("node_id", "p/sink0")]
+            ),
+            1
+        );
+    }
+
+    #[tokio::test]
     async fn dead_letter_appends_multiple_entries() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("dead.jsonl");
@@ -202,7 +287,9 @@ mod tests {
             let (w, _) = writer(5);
             let policy = fast_policy(1, ExhaustedPolicy::DeadLetter { path: path.clone() });
             let env = Envelope::new("src", json!({"i": i}));
-            write_with_retry(&w, &env, &policy).await.unwrap();
+            write_with_retry(&w, &env, &policy, &NodeCtx::noop())
+                .await
+                .unwrap();
         }
 
         let contents = std::fs::read_to_string(&path).unwrap();
