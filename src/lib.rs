@@ -8,6 +8,8 @@ use futures::future;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use crate::config::ObservabilityConfig;
+
 pub mod cli;
 pub mod config;
 pub mod envelope;
@@ -29,11 +31,31 @@ use pipeline::{Pipeline, spawn_pipeline};
 /// exit (cancellation, upstream closure, or unrecoverable error).
 pub struct Courier {
     pipelines: Vec<Pipeline>,
+    /// Parsed observability config carried through from `Config`. Stored
+    /// here so subsequent PRs can wire OTLP exporters and force-flush
+    /// providers on shutdown without changing this signature again.
+    /// `None` means "use built-in defaults".
+    observability: Option<ObservabilityConfig>,
 }
 
 impl Courier {
     pub fn new(pipelines: Vec<Pipeline>) -> Self {
-        Self { pipelines }
+        Self {
+            pipelines,
+            observability: None,
+        }
+    }
+
+    /// Attach the observability config parsed from `[observability]`.
+    /// Builder shape so tests and `Registry::build_courier` keep using
+    /// `Courier::new(...)` without a forced extra argument.
+    pub fn with_observability(mut self, observability: Option<ObservabilityConfig>) -> Self {
+        self.observability = observability;
+        self
+    }
+
+    pub fn observability(&self) -> Option<&ObservabilityConfig> {
+        self.observability.as_ref()
     }
 
     /// Spawn every pipeline as tokio tasks under the given cancel token.

@@ -68,6 +68,7 @@ async fn pipeline_posts_payload_via_api_sink() {
 
     let courier = registry()
         .build_courier(Config {
+            observability: None,
             pipelines: vec![PipelineSpec {
                 name: "to-webhook".into(),
                 source: SourceSpec {
@@ -114,6 +115,7 @@ async fn api_sink_sends_full_envelope_when_configured() {
 
     let courier = registry()
         .build_courier(Config {
+            observability: None,
             pipelines: vec![PipelineSpec {
                 name: "with-meta".into(),
                 source: SourceSpec {
@@ -154,6 +156,7 @@ async fn api_sink_forwards_custom_headers_and_method() {
 
     let courier = registry()
         .build_courier(Config {
+            observability: None,
             pipelines: vec![PipelineSpec {
                 name: "put".into(),
                 source: SourceSpec {
@@ -204,6 +207,7 @@ async fn api_sink_retries_then_succeeds_on_5xx() {
 
     let courier = registry()
         .build_courier(Config {
+            observability: None,
             pipelines: vec![PipelineSpec {
                 name: "with-retry".into(),
                 source: SourceSpec {
@@ -249,6 +253,7 @@ async fn api_sink_dead_letters_after_retry_exhaustion() {
 
     let courier = registry()
         .build_courier(Config {
+            observability: None,
             pipelines: vec![PipelineSpec {
                 name: "dlq".into(),
                 source: SourceSpec {
@@ -318,6 +323,7 @@ async fn api_sink_drop_policy_continues_after_failure() {
     // already does this — it sends sequentially and only closes when done.
     let courier = registry()
         .build_courier(Config {
+            observability: None,
             pipelines: vec![PipelineSpec {
                 name: "drop".into(),
                 source: SourceSpec {
@@ -364,6 +370,7 @@ async fn api_sink_writes_through_a_transform() {
 
     let courier = registry()
         .build_courier(Config {
+            observability: None,
             pipelines: vec![PipelineSpec {
                 name: "tx-then-api".into(),
                 source: SourceSpec {

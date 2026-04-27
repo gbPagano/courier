@@ -116,6 +116,7 @@ async fn end_to_end_pipeline_built_through_registry() {
 
     let courier = registry
         .build_courier(Config {
+            observability: None,
             pipelines: vec![PipelineSpec {
                 name: "p".into(),
                 source: SourceSpec {
@@ -168,6 +169,7 @@ async fn built_in_script_transform_runs_through_registry() {
 
     let courier = registry
         .build_courier(Config {
+            observability: None,
             pipelines: vec![PipelineSpec {
                 name: "scripted".into(),
                 source: SourceSpec {
@@ -223,6 +225,7 @@ async fn built_in_lua_script_transform_runs_through_registry() {
 
     let courier = registry
         .build_courier(Config {
+            observability: None,
             pipelines: vec![PipelineSpec {
                 name: "lua-scripted".into(),
                 source: SourceSpec {
@@ -277,7 +280,7 @@ async fn built_in_python_script_transform_runs_through_registry() {
         .unwrap();
 
     let courier = registry
-        .build_courier(Config {
+        .build_courier(Config { observability: None,
             pipelines: vec![PipelineSpec {
                 name: "python-scripted".into(),
                 source: SourceSpec {
@@ -327,7 +330,7 @@ async fn built_in_python_script_transform_supports_custom_entrypoint() {
         .unwrap();
 
     let courier = registry
-        .build_courier(Config {
+        .build_courier(Config { observability: None,
             pipelines: vec![PipelineSpec {
                 name: "python-custom-entrypoint".into(),
                 source: SourceSpec {
@@ -379,6 +382,7 @@ async fn built_in_script_transform_requires_runtime() {
 
     let err = registry
         .build_courier(Config {
+            observability: None,
             pipelines: vec![PipelineSpec {
                 name: "missing-runtime".into(),
                 source: SourceSpec {
@@ -428,6 +432,7 @@ async fn built_in_lua_script_transform_rejects_rhai_limits() {
 
     let err = registry
         .build_courier(Config {
+            observability: None,
             pipelines: vec![PipelineSpec {
                 name: "lua-rhai-limits".into(),
                 source: SourceSpec {
@@ -475,6 +480,7 @@ async fn built_in_python_script_transform_rejects_rhai_limits() {
 
     let err = registry
         .build_courier(Config {
+            observability: None,
             pipelines: vec![PipelineSpec {
                 name: "python-rhai-limits".into(),
                 source: SourceSpec {
@@ -527,6 +533,7 @@ async fn registry_fan_out_to_multiple_sinks() {
 
     let courier = registry
         .build_courier(Config {
+            observability: None,
             pipelines: vec![PipelineSpec {
                 name: "fan".into(),
                 source: SourceSpec {

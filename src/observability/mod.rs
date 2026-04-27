@@ -1,7 +1,7 @@
 //! Observability primitives for the Courier runtime.
 //!
-//! For now this only sets up the logging facade: a `tracing-subscriber`
-//! layered with `EnvFilter`, plus `tracing-log::LogTracer` so the existing
+//! Today this owns the logging facade: a `tracing-subscriber` layered
+//! with `EnvFilter`, plus `tracing-log::LogTracer` so the existing
 //! `log::` call sites flow through the same subscriber. Metrics, tracing,
 //! and OTLP export are added in subsequent PRs (see OBSERVABILITY_PLAN.md).
 
@@ -10,9 +10,11 @@ use std::sync::Once;
 use tracing_log::LogTracer;
 use tracing_subscriber::{EnvFilter, fmt};
 
+use crate::config::{LogFormat, ObservabilityConfig};
+
 static INIT: Once = Once::new();
 
-/// Initialize the global logging subscriber.
+/// Initialize the global logging subscriber with built-in defaults.
 ///
 /// `default_directive` is the filter used when `RUST_LOG` is unset (e.g.
 /// `"info"` for `run`, `"off"` for one-shot CLI commands). `RUST_LOG`, when
@@ -22,21 +24,39 @@ static INIT: Once = Once::new();
 /// Idempotent: a second call on the same process is a no-op so tests and
 /// embedders that re-enter the entry point do not panic.
 pub fn init_default_logging(default_directive: &str) {
-    INIT.call_once(|| install(default_directive));
+    init_from_config(None, default_directive);
 }
 
-fn install(default_directive: &str) {
-    let filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_directive));
+/// Initialize the subscriber from an optional `[observability]` config.
+///
+/// Precedence for the filter directive (highest first):
+/// 1. `RUST_LOG` env var — keeps existing operator muscle memory and is
+///    consistent with the prior `env_logger` behavior.
+/// 2. `observability.log_level` from config, if set.
+/// 3. The caller-supplied `default_directive` (built-in per-subcommand).
+///
+/// Idempotent like [`init_default_logging`].
+pub fn init_from_config(config: Option<&ObservabilityConfig>, default_directive: &str) {
+    let format = config.map(|c| c.log_format).unwrap_or_default();
+    let configured_level = config.and_then(|c| c.log_level.clone());
+    INIT.call_once(|| install(format, configured_level.as_deref(), default_directive));
+}
+
+fn install(format: LogFormat, configured_level: Option<&str>, default_directive: &str) {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        EnvFilter::try_new(configured_level.unwrap_or(default_directive))
+            .expect("configured/default log filter should be valid")
+    });
 
     let _ = LogTracer::init();
     // Match the prior `env_logger` behavior: write to stderr so stdout stays
     // clean for command output (`validate`, `list-components`) and for users
     // piping `courier run` output downstream.
-    let _ = fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        .try_init();
+    let builder = fmt().with_env_filter(filter).with_writer(std::io::stderr);
+    let _ = match format {
+        LogFormat::Text => builder.try_init(),
+        LogFormat::Json => builder.json().try_init(),
+    };
 }
 
 #[cfg(test)]

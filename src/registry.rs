@@ -198,6 +198,7 @@ impl Registry {
     pub fn build_courier(&self, config: Config) -> Result<Courier> {
         config.validate()?;
 
+        let observability = config.observability;
         let mut pipelines = Vec::with_capacity(config.pipelines.len());
         for spec in config.pipelines {
             let name = spec.name.clone();
@@ -206,7 +207,7 @@ impl Registry {
                 .with_context(|| format!("failed to build pipeline '{name}'"))?;
             pipelines.push(pipeline);
         }
-        Ok(Courier::new(pipelines))
+        Ok(Courier::new(pipelines).with_observability(observability))
     }
 
     fn build_pipeline(&self, spec: PipelineSpec) -> Result<Pipeline> {
@@ -541,9 +542,7 @@ mod tests {
     #[test]
     fn build_courier_with_empty_config_yields_zero_pipelines() {
         let registry = noop_registry();
-        let courier = registry
-            .build_courier(Config { pipelines: vec![] })
-            .unwrap();
+        let courier = registry.build_courier(Config::default()).unwrap();
         // Nothing to assert beyond "no panic" — Courier has private fields.
         // Spawning produces zero handles; run-time behavior tested elsewhere.
         let handles = courier.spawn(CancellationToken::new());
@@ -583,6 +582,7 @@ mod tests {
 
         registry
             .build_courier(Config {
+                observability: None,
                 pipelines: vec![PipelineSpec {
                     name: "my-pipeline".into(),
                     source: SourceSpec {
@@ -646,6 +646,7 @@ mod tests {
 
         let err = registry
             .build_courier(Config {
+                observability: None,
                 pipelines: vec![PipelineSpec {
                     name: "analytics".into(),
                     source: SourceSpec {
@@ -698,6 +699,7 @@ mod tests {
 
         registry
             .build_courier(Config {
+                observability: None,
                 pipelines: vec![PipelineSpec {
                     name: "p".into(),
                     source: noop_source_spec(),
@@ -739,6 +741,7 @@ mod tests {
         let registry = noop_registry();
         registry
             .build_courier(Config {
+                observability: None,
                 pipelines: vec![PipelineSpec {
                     name: "p".into(),
                     source: noop_source_spec(),
