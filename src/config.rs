@@ -45,6 +45,7 @@ pub struct ObservabilityConfig {
     pub log_keys: bool,
     pub metrics: MetricsConfig,
     pub tracing: TracingConfig,
+    pub logs: LogsConfig,
 }
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
@@ -93,6 +94,14 @@ impl Default for TracingConfig {
             service_name: "courier".to_string(),
         }
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LogsConfig {
+    /// OTLP endpoint to push logs to. `None` disables OTLP log export
+    /// (events still flow to stdout/stderr through the `tracing-subscriber`
+    /// fmt layer).
+    pub otlp_endpoint: Option<String>,
 }
 
 impl Config {
@@ -435,6 +444,8 @@ struct RawObservability {
     metrics: Option<RawMetricsConfig>,
     #[serde(default)]
     tracing: Option<RawTracingConfig>,
+    #[serde(default)]
+    logs: Option<RawLogsConfig>,
 }
 
 #[derive(Debug, Default, Deserialize, Clone, Copy)]
@@ -463,6 +474,13 @@ struct RawTracingConfig {
     sample_ratio: Option<f64>,
     #[serde(default)]
     service_name: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawLogsConfig {
+    #[serde(default)]
+    otlp_endpoint: Option<String>,
 }
 
 /// Per-file defaults applied to components that omit the matching field.
@@ -597,6 +615,12 @@ fn observability_from_raw(value: RawObservability) -> ObservabilityConfig {
                 }
             })
             .unwrap_or(default.tracing),
+        logs: value
+            .logs
+            .map(|l| LogsConfig {
+                otlp_endpoint: l.otlp_endpoint,
+            })
+            .unwrap_or(default.logs),
     }
 }
 
@@ -1670,6 +1694,9 @@ mod tests {
             otlp_endpoint = "http://collector:4317"
             sample_ratio = 0.25
             service_name = "courier-prod"
+
+            [observability.logs]
+            otlp_endpoint = "http://collector:4317"
             {}"#,
             minimal_pipeline_block()
         ))
@@ -1690,6 +1717,10 @@ mod tests {
         );
         assert_eq!(obs.tracing.sample_ratio, 0.25);
         assert_eq!(obs.tracing.service_name, "courier-prod");
+        assert_eq!(
+            obs.logs.otlp_endpoint.as_deref(),
+            Some("http://collector:4317")
+        );
     }
 
     #[test]

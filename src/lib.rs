@@ -90,6 +90,7 @@ impl Courier {
                     signal_cancel.cancel();
                     signal_metrics.force_flush();
                     crate::observability::force_flush_traces();
+                    crate::observability::force_flush_logs();
                 }
                 Err(e) => log::error!("failed to listen for shutdown signal: {e}"),
             }
@@ -99,5 +100,6 @@ impl Courier {
         future::join_all(handles).await;
         metrics.shutdown();
         crate::observability::shutdown_traces();
+        crate::observability::shutdown_logs();
     }
 }

@@ -13,13 +13,15 @@ use std::sync::{Once, OnceLock};
 
 use anyhow::{Context, Result};
 use opentelemetry::trace::TracerProvider as _;
-use opentelemetry_otlp::{SpanExporter, WithExportConfig};
+use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
+use opentelemetry_otlp::{LogExporter, SpanExporter, WithExportConfig};
 use opentelemetry_sdk::Resource;
+use opentelemetry_sdk::logs::SdkLoggerProvider;
 use opentelemetry_sdk::trace::{Sampler, SdkTracerProvider};
 use tracing_log::LogTracer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{EnvFilter, fmt, registry};
+use tracing_subscriber::{EnvFilter, Layer, fmt, registry};
 
 use crate::config::{LogFormat, ObservabilityConfig};
 
@@ -32,6 +34,7 @@ pub use source_ctx::{SendStopped, SourceCtx};
 
 static INIT: Once = Once::new();
 static TRACER_PROVIDER: OnceLock<SdkTracerProvider> = OnceLock::new();
+static LOGGER_PROVIDER: OnceLock<SdkLoggerProvider> = OnceLock::new();
 
 /// Initialize the global logging subscriber with built-in defaults.
 ///
@@ -62,12 +65,14 @@ pub fn init_from_config(
     let format = config.map(|c| c.log_format).unwrap_or_default();
     let configured_level = config.and_then(|c| c.log_level.clone());
     let tracer_provider = init_traces(config)?;
+    let logger_provider = init_logs(config)?;
     INIT.call_once(|| {
         install(
             format,
             configured_level.as_deref(),
             default_directive,
             tracer_provider,
+            logger_provider,
         )
     });
     Ok(())
@@ -78,6 +83,7 @@ fn install(
     configured_level: Option<&str>,
     default_directive: &str,
     tracer_provider: Option<SdkTracerProvider>,
+    logger_provider: Option<SdkLoggerProvider>,
 ) {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         EnvFilter::try_new(configured_level.unwrap_or(default_directive))
@@ -88,41 +94,48 @@ fn install(
     // Match the prior `env_logger` behavior: write to stderr so stdout stays
     // clean for command output (`validate`, `list-components`) and for users
     // piping `courier run` output downstream.
-    if let Some(provider) = tracer_provider {
+    let fmt_layer = match format {
+        LogFormat::Text => fmt::layer().with_writer(std::io::stderr).boxed(),
+        LogFormat::Json => fmt::layer().json().with_writer(std::io::stderr).boxed(),
+    };
+
+    let telemetry_layer = tracer_provider.map(|provider| {
         let tracer = provider.tracer("courier");
-        let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
+        let layer = tracing_opentelemetry::layer().with_tracer(tracer).boxed();
         let _ = TRACER_PROVIDER.set(provider);
-        let _ = match format {
-            LogFormat::Text => registry()
-                .with(filter)
-                .with(telemetry)
-                .with(fmt::layer().with_writer(std::io::stderr))
-                .try_init(),
-            LogFormat::Json => registry()
-                .with(filter)
-                .with(telemetry)
-                .with(fmt::layer().json().with_writer(std::io::stderr))
-                .try_init(),
-        };
-    } else {
-        let _ = match format {
-            LogFormat::Text => registry()
-                .with(filter)
-                .with(fmt::layer().with_writer(std::io::stderr))
-                .try_init(),
-            LogFormat::Json => registry()
-                .with(filter)
-                .with(fmt::layer().json().with_writer(std::io::stderr))
-                .try_init(),
-        };
-    }
+        layer
+    });
+
+    // OTLP log appender. The bridge converts every `tracing` event into an
+    // OTel `LogRecord` and routes it through the `SdkLoggerProvider` (which
+    // we own via `LOGGER_PROVIDER` so shutdown can flush). Local stderr
+    // output keeps working through `fmt_layer` — this is additive.
+    let otlp_log_layer = logger_provider.map(|provider| {
+        let layer = OpenTelemetryTracingBridge::new(&provider).boxed();
+        let _ = LOGGER_PROVIDER.set(provider);
+        layer
+    });
+
+    let _ = registry()
+        .with(filter)
+        .with(telemetry_layer)
+        .with(otlp_log_layer)
+        .with(fmt_layer)
+        .try_init();
+}
+
+fn configured_endpoint(endpoint: Option<&str>) -> Option<&str> {
+    endpoint.and_then(|endpoint| {
+        let endpoint = endpoint.trim();
+        (!endpoint.is_empty()).then_some(endpoint)
+    })
 }
 
 fn init_traces(config: Option<&ObservabilityConfig>) -> Result<Option<SdkTracerProvider>> {
     let Some(obs) = config else {
         return Ok(None);
     };
-    let Some(endpoint) = obs.tracing.otlp_endpoint.as_deref() else {
+    let Some(endpoint) = configured_endpoint(obs.tracing.otlp_endpoint.as_deref()) else {
         return Ok(None);
     };
 
@@ -146,6 +159,31 @@ fn init_traces(config: Option<&ObservabilityConfig>) -> Result<Option<SdkTracerP
     Ok(Some(provider))
 }
 
+fn init_logs(config: Option<&ObservabilityConfig>) -> Result<Option<SdkLoggerProvider>> {
+    let Some(obs) = config else {
+        return Ok(None);
+    };
+    let Some(endpoint) = configured_endpoint(obs.logs.otlp_endpoint.as_deref()) else {
+        return Ok(None);
+    };
+
+    let exporter = LogExporter::builder()
+        .with_tonic()
+        .with_endpoint(endpoint)
+        .build()
+        .with_context(|| format!("failed to build OTLP log exporter for {endpoint}"))?;
+
+    let resource = Resource::builder()
+        .with_service_name(obs.tracing.service_name.clone())
+        .build();
+
+    let provider = SdkLoggerProvider::builder()
+        .with_batch_exporter(exporter)
+        .with_resource(resource)
+        .build();
+    Ok(Some(provider))
+}
+
 pub fn force_flush_traces() {
     if let Some(provider) = TRACER_PROVIDER.get() {
         let _ = provider.force_flush();
@@ -158,10 +196,23 @@ pub fn shutdown_traces() {
     }
 }
 
+pub fn force_flush_logs() {
+    if let Some(provider) = LOGGER_PROVIDER.get() {
+        let _ = provider.force_flush();
+    }
+}
+
+pub fn shutdown_logs() {
+    if let Some(provider) = LOGGER_PROVIDER.get() {
+        let _ = provider.shutdown();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    use super::configured_endpoint;
     use tracing::Subscriber;
     use tracing::subscriber::with_default;
     use tracing_log::LogTracer;
@@ -196,6 +247,17 @@ mod tests {
         let rendered = filter.to_string();
         assert!(rendered.contains("courier=debug"), "got: {rendered}");
         assert!(rendered.contains("hyper=warn"), "got: {rendered}");
+    }
+
+    #[test]
+    fn empty_otlp_endpoints_are_disabled() {
+        assert_eq!(configured_endpoint(None), None);
+        assert_eq!(configured_endpoint(Some("")), None);
+        assert_eq!(configured_endpoint(Some("   \t\n")), None);
+        assert_eq!(
+            configured_endpoint(Some("  http://collector:4317  ")),
+            Some("http://collector:4317")
+        );
     }
 
     #[test]

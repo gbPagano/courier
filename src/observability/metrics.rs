@@ -314,7 +314,7 @@ pub fn init_metrics(config: Option<&ObservabilityConfig>) -> Result<ObsHandle> {
     let Some(obs) = config else {
         return Ok(ObsHandle::noop());
     };
-    let Some(endpoint) = obs.metrics.otlp_endpoint.as_deref() else {
+    let Some(endpoint) = super::configured_endpoint(obs.metrics.otlp_endpoint.as_deref()) else {
         return Ok(ObsHandle::noop());
     };
 
