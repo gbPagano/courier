@@ -11,6 +11,7 @@ use tokio_util::sync::CancellationToken;
 pub mod cli;
 pub mod config;
 pub mod envelope;
+pub mod observability;
 pub mod pipeline;
 pub mod registry;
 pub mod retry;

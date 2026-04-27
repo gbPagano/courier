@@ -22,8 +22,7 @@ async fn main() -> ExitCode {
         CliCommand::Run { .. } => "info",
         CliCommand::Validate { .. } | CliCommand::ListComponents => "off",
     };
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_log_level))
-        .init();
+    courier::observability::init_default_logging(default_log_level);
 
     match cli.command {
         CliCommand::Run { config } => {
