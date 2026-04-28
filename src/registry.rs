@@ -22,6 +22,7 @@ use serde_json::Value;
 
 use crate::Courier;
 use crate::config::{Config, PipelineSpec, SinkSpec, SourceSpec, TransformSpec};
+use crate::observability::init_metrics;
 use crate::pipeline::{ErrorPolicy, Pipeline};
 use crate::retry::RetryPolicy;
 use crate::sinks::Sink;
@@ -198,15 +199,34 @@ impl Registry {
     pub fn build_courier(&self, config: Config) -> Result<Courier> {
         config.validate()?;
 
+        let observability = config.observability.clone();
+        let metrics = init_metrics(observability.as_ref())?;
         let mut pipelines = Vec::with_capacity(config.pipelines.len());
         for spec in config.pipelines {
             let name = spec.name.clone();
-            let pipeline = self
+            let mut pipeline = self
                 .build_pipeline(spec)
                 .with_context(|| format!("failed to build pipeline '{name}'"))?;
+            pipeline = pipeline.with_observability(Some(metrics.clone()));
             pipelines.push(pipeline);
         }
-        Ok(Courier::new(pipelines))
+        Ok(Courier::new(pipelines)
+            .with_observability(observability)
+            .with_metrics(metrics))
+    }
+
+    /// Validate `config` and exercise every component factory without
+    /// producing a runtime. `courier validate` uses this so OTLP
+    /// exporters and metric providers are never constructed during a
+    /// pure config check.
+    pub fn dry_run_build(&self, config: Config) -> Result<()> {
+        config.validate()?;
+        for spec in config.pipelines {
+            let name = spec.name.clone();
+            self.build_pipeline(spec)
+                .with_context(|| format!("failed to build pipeline '{name}'"))?;
+        }
+        Ok(())
     }
 
     fn build_pipeline(&self, spec: PipelineSpec) -> Result<Pipeline> {
@@ -541,9 +561,7 @@ mod tests {
     #[test]
     fn build_courier_with_empty_config_yields_zero_pipelines() {
         let registry = noop_registry();
-        let courier = registry
-            .build_courier(Config { pipelines: vec![] })
-            .unwrap();
+        let courier = registry.build_courier(Config::default()).unwrap();
         // Nothing to assert beyond "no panic" — Courier has private fields.
         // Spawning produces zero handles; run-time behavior tested elsewhere.
         let handles = courier.spawn(CancellationToken::new());
@@ -583,6 +601,7 @@ mod tests {
 
         registry
             .build_courier(Config {
+                observability: None,
                 pipelines: vec![PipelineSpec {
                     name: "my-pipeline".into(),
                     source: SourceSpec {
@@ -646,6 +665,7 @@ mod tests {
 
         let err = registry
             .build_courier(Config {
+                observability: None,
                 pipelines: vec![PipelineSpec {
                     name: "analytics".into(),
                     source: SourceSpec {
@@ -698,6 +718,7 @@ mod tests {
 
         registry
             .build_courier(Config {
+                observability: None,
                 pipelines: vec![PipelineSpec {
                     name: "p".into(),
                     source: noop_source_spec(),
@@ -739,6 +760,7 @@ mod tests {
         let registry = noop_registry();
         registry
             .build_courier(Config {
+                observability: None,
                 pipelines: vec![PipelineSpec {
                     name: "p".into(),
                     source: noop_source_spec(),

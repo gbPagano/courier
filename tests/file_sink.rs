@@ -51,6 +51,7 @@ async fn pipeline_writes_jsonl_to_disk() {
 
     let courier = registry()
         .build_courier(Config {
+            observability: None,
             pipelines: vec![PipelineSpec {
                 name: "to-file".into(),
                 source: SourceSpec {
@@ -97,6 +98,7 @@ async fn pipeline_writes_csv_with_header_then_rows() {
 
     let courier = registry()
         .build_courier(Config {
+            observability: None,
             pipelines: vec![PipelineSpec {
                 name: "csv".into(),
                 source: SourceSpec {
@@ -147,6 +149,7 @@ async fn jsonl_envelope_mode_persists_meta_through_pipeline() {
 
     let courier = registry()
         .build_courier(Config {
+            observability: None,
             pipelines: vec![PipelineSpec {
                 name: "with-meta".into(),
                 source: SourceSpec {

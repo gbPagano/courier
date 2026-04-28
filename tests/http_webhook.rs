@@ -50,6 +50,7 @@ async fn pipeline_receives_http_post_as_envelope() {
 
     let courier = registry
         .build_courier(Config {
+            observability: None,
             pipelines: vec![PipelineSpec {
                 name: "incoming-events".into(),
                 source: SourceSpec {
@@ -110,6 +111,7 @@ async fn invalid_webhook_requests_return_client_errors() {
 
     let courier = registry
         .build_courier(Config {
+            observability: None,
             pipelines: vec![PipelineSpec {
                 name: "incoming-events".into(),
                 source: SourceSpec {

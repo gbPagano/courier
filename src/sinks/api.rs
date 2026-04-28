@@ -10,6 +10,7 @@ use serde_json::Value;
 
 use crate::config::parse_config;
 use crate::envelope::Envelope;
+use crate::observability::trace_context::{TRACEPARENT, TRACESTATE};
 use crate::pipeline::ErrorPolicy;
 use crate::retry::RetryPolicy;
 use crate::sinks::{ManagedSink, Sink, WriteOne};
@@ -80,10 +81,25 @@ impl WriteOne for ApiSink {
             BodyFormat::Envelope => &serde_json::to_value(env)?,
         };
 
+        let mut headers = self.headers.clone();
+        for key in [TRACEPARENT, TRACESTATE] {
+            if let Some(value) = env.meta.headers.get(key) {
+                let name = HeaderName::from_static(key);
+                match HeaderValue::try_from(value) {
+                    Ok(value) => {
+                        headers.insert(name, value);
+                    }
+                    Err(_) => {
+                        log::warn!("skipping invalid trace context header value for {key}");
+                    }
+                }
+            }
+        }
+
         let resp = self
             .client
             .request(self.method.clone(), &self.url)
-            .headers(self.headers.clone())
+            .headers(headers)
             .json(body)
             .send()
             .await
@@ -274,6 +290,63 @@ mod tests {
         );
 
         sink.write(&Envelope::new("src", json!({}))).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn forwards_trace_context_headers() {
+        let server = MockServer::start().await;
+        let traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+        Mock::given(method_matcher("POST"))
+            .and(path("/hook"))
+            .and(header("traceparent", traceparent))
+            .respond_with(ResponseTemplate::new(202))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let sink = build_sink(
+            format!("{}/hook", server.uri()),
+            Method::POST,
+            HeaderMap::new(),
+            BodyFormat::Payload,
+        );
+
+        let mut env = Envelope::new("src", json!({}));
+        env.meta
+            .headers
+            .insert(TRACEPARENT.to_string(), traceparent.to_string());
+        sink.write(&env).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn skips_invalid_trace_context_headers() {
+        let server = MockServer::start().await;
+        Mock::given(method_matcher("POST"))
+            .and(path("/hook"))
+            .and(body_json(json!({ "n": 1 })))
+            .respond_with(ResponseTemplate::new(202))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let sink = build_sink(
+            format!("{}/hook", server.uri()),
+            Method::POST,
+            HeaderMap::new(),
+            BodyFormat::Payload,
+        );
+
+        let mut env = Envelope::new("src", json!({ "n": 1 }));
+        env.meta
+            .headers
+            .insert(TRACEPARENT.to_string(), "invalid\ntraceparent".to_string());
+        env.meta
+            .headers
+            .insert(TRACESTATE.to_string(), "invalid\ntracestate".to_string());
+
+        sink.write(&env)
+            .await
+            .expect("invalid trace headers should not fail delivery");
     }
 
     #[tokio::test]

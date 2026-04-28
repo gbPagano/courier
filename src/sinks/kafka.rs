@@ -3,12 +3,14 @@ use std::time::Duration;
 use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
 use rdkafka::config::ClientConfig;
+use rdkafka::message::{Header, OwnedHeaders};
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::config::parse_config;
 use crate::envelope::Envelope;
+use crate::observability::trace_context::{TRACEPARENT, TRACESTATE};
 use crate::pipeline::ErrorPolicy;
 use crate::retry::RetryPolicy;
 use crate::sinks::{ManagedSink, Sink, WriteOne};
@@ -52,7 +54,21 @@ impl WriteOne for KafkaSink {
             .unwrap_or_else(|| env.meta.source_id.clone());
         let payload = serde_json::to_string(&env.payload)?;
 
-        let record = FutureRecord::to(&self.topic).key(&key).payload(&payload);
+        let mut record = FutureRecord::to(&self.topic).key(&key).payload(&payload);
+        let mut headers = OwnedHeaders::new();
+        let mut has_trace_headers = false;
+        for header_key in [TRACEPARENT, TRACESTATE] {
+            if let Some(value) = env.meta.headers.get(header_key) {
+                headers = headers.insert(Header {
+                    key: header_key,
+                    value: Some(value.as_str()),
+                });
+                has_trace_headers = true;
+            }
+        }
+        if has_trace_headers {
+            record = record.headers(headers);
+        }
         match self.producer.send(record, Duration::from_secs(0)).await {
             Ok(status) => {
                 log::debug!(
@@ -106,6 +122,7 @@ mod tests {
     use super::*;
     use rdkafka::Message;
     use rdkafka::consumer::{Consumer, StreamConsumer};
+    use rdkafka::message::Headers;
     use serde_json::json;
     use testcontainers_modules::kafka::apache::{self, KAFKA_PORT};
     use testcontainers_modules::testcontainers::runners::AsyncRunner;
@@ -141,6 +158,10 @@ mod tests {
         // Explicit meta.key -> used as record key.
         let mut e1 = Envelope::new("src-1", json!({ "hello": "world" }));
         e1.meta.key = Some("k-1".into());
+        e1.meta.headers.insert(
+            TRACEPARENT.to_string(),
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".to_string(),
+        );
         sink.write(&e1).await?;
 
         // No meta.key -> falls back to meta.source_id.
@@ -157,10 +178,25 @@ mod tests {
         consumer.subscribe(&[topic])?;
 
         let mut received = Vec::new();
+        let mut traceparent = None;
         for _ in 0..2 {
             let msg = tokio::time::timeout(Duration::from_secs(30), consumer.recv()).await??;
             let key = msg.key().map(|k| String::from_utf8_lossy(k).into_owned());
             let payload: serde_json::Value = serde_json::from_slice(msg.payload().unwrap())?;
+            if key.as_deref() == Some("k-1") {
+                traceparent = msg.headers().and_then(|headers| {
+                    headers.iter().find_map(|header| {
+                        if header.key == TRACEPARENT {
+                            header
+                                .value
+                                .and_then(|value| std::str::from_utf8(value).ok())
+                                .map(str::to_string)
+                        } else {
+                            None
+                        }
+                    })
+                });
+            }
             received.push((key, payload));
         }
 
@@ -169,6 +205,10 @@ mod tests {
                 .iter()
                 .any(|(k, p)| k.as_deref() == Some("k-1") && p == &json!({ "hello": "world" })),
             "missing explicit-key message in {received:?}",
+        );
+        assert_eq!(
+            traceparent.as_deref(),
+            Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"),
         );
         assert!(
             received

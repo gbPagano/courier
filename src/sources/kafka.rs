@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use rdkafka::Message;
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{Consumer, StreamConsumer};
+use rdkafka::message::Headers;
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::sync::mpsc::Sender;
@@ -10,6 +11,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::parse_config;
 use crate::envelope::Envelope;
+use crate::observability::trace_context::{TRACEPARENT, TRACESTATE};
+use crate::observability::{NodeCtx, SendStopped, SourceCtx};
 use crate::retry::RetryPolicy;
 use crate::sources::Source;
 
@@ -23,10 +26,12 @@ use crate::sources::Source;
 pub struct KafkaSource {
     id: String,
     consumer: StreamConsumer,
+    source_ctx: SourceCtx,
 }
 
 impl KafkaSource {
     pub fn new(id: impl Into<String>, brokers: &str, group_id: &str, topics: Vec<&str>) -> Self {
+        let id = id.into();
         let consumer: StreamConsumer = ClientConfig::new()
             .set("group.id", group_id)
             .set("bootstrap.servers", brokers)
@@ -41,7 +46,8 @@ impl KafkaSource {
             .expect("Can't subscribe to specified topics");
 
         Self {
-            id: id.into(),
+            source_ctx: SourceCtx::new(&id),
+            id,
             consumer,
         }
     }
@@ -53,8 +59,13 @@ impl Source for KafkaSource {
         &self.id
     }
 
+    fn set_node_ctx(&mut self, ctx: NodeCtx) {
+        self.source_ctx = SourceCtx::from_node_ctx(ctx);
+    }
+
     async fn run(self: Box<Self>, tx: Sender<Envelope>, cancel: CancellationToken) {
         log::info!("[{}] starting kafka consumer", self.id);
+        let source_ctx = self.source_ctx.clone();
 
         loop {
             let msg = tokio::select! {
@@ -108,19 +119,29 @@ impl Source for KafkaSource {
             env.meta
                 .headers
                 .insert("kafka.offset".into(), offset.to_string());
+            if let Some(headers) = msg.headers() {
+                for header in headers.iter() {
+                    if matches!(header.key, TRACEPARENT | TRACESTATE)
+                        && let Some(value) = header.value.and_then(|v| std::str::from_utf8(v).ok())
+                    {
+                        env.meta
+                            .headers
+                            .insert(header.key.to_string(), value.to_string());
+                    }
+                }
+            }
 
             log::debug!(
                 "[{}] received topic={topic} partition={partition} offset={offset}",
                 self.id,
             );
 
-            tokio::select! {
-                _ = cancel.cancelled() => return,
-                res = tx.send(env) => {
-                    if res.is_err() {
-                        log::info!("[{}] downstream closed, stopping", self.id);
-                        return;
-                    }
+            match source_ctx.send(&tx, env, &cancel).await {
+                Ok(()) => {}
+                Err(SendStopped::Cancelled) => return,
+                Err(SendStopped::DownstreamClosed) => {
+                    log::info!("[{}] downstream closed, stopping", self.id);
+                    return;
                 }
             }
         }
@@ -180,6 +201,7 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    use rdkafka::message::{Header, OwnedHeaders};
     use rdkafka::producer::{FutureProducer, FutureRecord};
     use serde_json::json;
     use testcontainers_modules::kafka::apache::{self, KAFKA_PORT};
@@ -266,7 +288,14 @@ mod tests {
             while !produce_cancel.is_cancelled() {
                 let _ = producer
                     .send(
-                        FutureRecord::to(topic).key("k-1").payload(payload),
+                        FutureRecord::to(topic).key("k-1").payload(payload).headers(
+                            OwnedHeaders::new().insert(Header {
+                                key: TRACEPARENT,
+                                value: Some(
+                                    "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+                                ),
+                            }),
+                        ),
                         Duration::from_secs(5),
                     )
                     .await;
@@ -294,6 +323,10 @@ mod tests {
         assert!(
             env.meta.headers.contains_key("kafka.offset"),
             "missing kafka.offset header",
+        );
+        assert_eq!(
+            env.meta.headers.get(TRACEPARENT).map(String::as_str),
+            Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"),
         );
         Ok(())
     }

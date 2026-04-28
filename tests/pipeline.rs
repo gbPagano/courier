@@ -249,6 +249,7 @@ async fn script_transform_end_to_end() {
 
     let courier = registry
         .build_courier(Config {
+            observability: None,
             pipelines: vec![PipelineSpec {
                 name: "scripted".into(),
                 source: SourceSpec {
@@ -315,6 +316,7 @@ async fn script_transform_filters_with_unit() {
 
     let courier = registry
         .build_courier(Config {
+            observability: None,
             pipelines: vec![PipelineSpec {
                 name: "filtered".into(),
                 source: SourceSpec {
@@ -376,6 +378,7 @@ async fn script_transform_drop_policy_continues_after_error() {
 
     let courier = registry
         .build_courier(Config {
+            observability: None,
             pipelines: vec![PipelineSpec {
                 name: "drop-errors".into(),
                 source: SourceSpec {
@@ -451,6 +454,7 @@ async fn script_transform_fail_pipeline_stops_after_error() {
 
     let courier = registry
         .build_courier(Config {
+            observability: None,
             pipelines: vec![PipelineSpec {
                 name: "fail-pipeline".into(),
                 source: SourceSpec {
@@ -517,6 +521,7 @@ async fn lua_script_transform_end_to_end() {
 
     let courier = registry
         .build_courier(Config {
+            observability: None,
             pipelines: vec![PipelineSpec {
                 name: "lua-scripted".into(),
                 source: SourceSpec {
@@ -583,6 +588,7 @@ async fn lua_script_transform_filters_with_nil() {
 
     let courier = registry
         .build_courier(Config {
+            observability: None,
             pipelines: vec![PipelineSpec {
                 name: "lua-filtered".into(),
                 source: SourceSpec {
@@ -641,6 +647,7 @@ async fn python_script_transform_end_to_end() {
 
     let courier = registry
         .build_courier(Config {
+            observability: None,
             pipelines: vec![PipelineSpec {
                 name: "python-scripted".into(),
                 source: SourceSpec {
@@ -702,6 +709,7 @@ async fn python_script_transform_filters_with_none() {
 
     let courier = registry
         .build_courier(Config {
+            observability: None,
             pipelines: vec![PipelineSpec {
                 name: "python-filtered".into(),
                 source: SourceSpec {
@@ -760,6 +768,7 @@ async fn script_transform_chains_rhai_then_python() {
 
     let courier = registry
         .build_courier(Config {
+            observability: None,
             pipelines: vec![PipelineSpec {
                 name: "rhai-then-python".into(),
                 source: SourceSpec {
@@ -839,6 +848,7 @@ async fn script_transform_chains_rhai_then_lua() {
 
     let courier = registry
         .build_courier(Config {
+            observability: None,
             pipelines: vec![PipelineSpec {
                 name: "rhai-then-lua".into(),
                 source: SourceSpec {
@@ -927,6 +937,7 @@ async fn python_script_transform_drop_policy_continues_after_error() {
 
     let courier = registry
         .build_courier(Config {
+            observability: None,
             pipelines: vec![PipelineSpec {
                 name: "python-drop-errors".into(),
                 source: SourceSpec {
@@ -994,6 +1005,7 @@ async fn python_script_transform_fail_pipeline_stops_after_error() {
 
     let courier = registry
         .build_courier(Config {
+            observability: None,
             pipelines: vec![PipelineSpec {
                 name: "python-fail-pipeline".into(),
                 source: SourceSpec {
@@ -1055,6 +1067,7 @@ async fn lua_script_transform_drop_policy_continues_after_error() {
 
     let courier = registry
         .build_courier(Config {
+            observability: None,
             pipelines: vec![PipelineSpec {
                 name: "lua-drop-errors".into(),
                 source: SourceSpec {
@@ -1130,6 +1143,7 @@ async fn lua_script_transform_fail_pipeline_stops_after_error() {
 
     let courier = registry
         .build_courier(Config {
+            observability: None,
             pipelines: vec![PipelineSpec {
                 name: "lua-fail-pipeline".into(),
                 source: SourceSpec {

@@ -56,14 +56,26 @@ fn resolve_config_path_with_env(
 
 pub fn build_runtime(path: &Path) -> Result<Courier> {
     let config = Config::load(path)?;
+    build_runtime_from_config(config, path)
+}
+
+/// Build a runtime from a pre-loaded `Config`. Used by `main` so that the
+/// observability config can be read off the parsed `Config` to drive the
+/// logging subscriber before the runtime is built — without re-reading
+/// the file from disk.
+pub fn build_runtime_from_config(config: Config, source: &Path) -> Result<Courier> {
     let registry = Registry::with_builtins()?;
     registry
         .build_courier(config)
-        .with_context(|| format!("failed to build runtime from config {}", path.display()))
+        .with_context(|| format!("failed to build runtime from config {}", source.display()))
 }
 
 pub fn validate_config(path: &Path) -> Result<()> {
-    build_runtime(path).map(drop)
+    let config = Config::load(path)?;
+    let registry = Registry::with_builtins()?;
+    registry
+        .dry_run_build(config)
+        .with_context(|| format!("failed to build runtime from config {}", path.display()))
 }
 
 pub fn list_components(registry: &Registry) -> String {

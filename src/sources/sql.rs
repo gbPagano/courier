@@ -14,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::parse_config;
 use crate::envelope::Envelope;
+use crate::observability::{NodeCtx, SendStopped, SourceCtx};
 use crate::retry::RetryPolicy;
 use crate::sources::Source;
 use crate::sources::retry::PollScheduler;
@@ -33,6 +34,7 @@ pub struct SqlQueryPollSource {
     query: String,
     poll_interval: Duration,
     retry: Option<RetryPolicy>,
+    source_ctx: SourceCtx,
 }
 
 impl SqlQueryPollSource {
@@ -43,8 +45,10 @@ impl SqlQueryPollSource {
         query: impl Into<String>,
         poll_interval: Duration,
     ) -> Self {
+        let id = id.into();
         Self {
-            id: id.into(),
+            source_ctx: SourceCtx::new(&id),
+            id,
             driver,
             dsn: dsn.into(),
             query: query.into(),
@@ -65,11 +69,16 @@ impl Source for SqlQueryPollSource {
         &self.id
     }
 
+    fn set_node_ctx(&mut self, ctx: NodeCtx) {
+        self.source_ctx = SourceCtx::from_node_ctx(ctx);
+    }
+
     async fn run(self: Box<Self>, tx: Sender<Envelope>, cancel: CancellationToken) {
         let mut scheduler = PollScheduler::new(self.poll_interval, self.retry.clone());
         let mut ticker = interval(self.poll_interval);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
         ticker.tick().await;
+        let source_ctx = self.source_ctx.clone();
 
         let db = match SourceDb::connect(self.driver, &self.dsn).await {
             Ok(db) => db,
@@ -116,13 +125,12 @@ impl Source for SqlQueryPollSource {
 
             for payload in rows {
                 let env = Envelope::new(&self.id, payload);
-                tokio::select! {
-                    _ = cancel.cancelled() => return,
-                    res = tx.send(env) => {
-                        if res.is_err() {
-                            log::info!("[{}] downstream closed, stopping", self.id);
-                            return;
-                        }
+                match source_ctx.send(&tx, env, &cancel).await {
+                    Ok(()) => {}
+                    Err(SendStopped::Cancelled) => return,
+                    Err(SendStopped::DownstreamClosed) => {
+                        log::info!("[{}] downstream closed, stopping", self.id);
+                        return;
                     }
                 }
             }

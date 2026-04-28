@@ -1,0 +1,46 @@
+[observability]
+service_name = "courier"      # OTel resource service.name
+log_level    = "courier=debug" # default filter when RUST_LOG is unset
+log_keys     = false          # allow meta.key in span fields (off by default)
+
+[observability.metrics]
+otlp_endpoint     = "http://localhost:4317"
+export_interval_ms = 5000     # OTLP push interval (default 15 s)
+
+[observability.tracing]
+otlp_endpoint = "http://localhost:4317"
+sample_ratio  = 1.0            # 1.0 is fine for the local Compose stack; lower this (e.g. 0.1) for production.
+
+[observability.logs]
+otlp_endpoint = "http://localhost:4317"   # bridge tracing events to OTLP logs
+
+[[pipelines]]
+name = "api->csv"
+
+[pipelines.source]
+type = "api_poll"
+url = "https://jsonplaceholder.typicode.com/users/1"
+interval_secs = 10
+
+[[pipelines.sinks]]
+type = "file"
+path = "./out/users.csv"
+format = "csv"
+columns = ["payload.id", "payload.name", "payload.email", "meta.source_id"]
+
+[[pipelines.sinks]]
+type = "kafka"
+brokers = "localhost:9092"
+topic = "topic1"
+on_error = "drop"
+
+[pipelines.sinks.retry]
+max_attempts = 3
+initial_delay_ms = 100
+backoff_multiplier = 2.0
+max_delay_ms = 5000
+
+[pipelines.sinks.retry.on_exhausted]
+kind = "dead_letter"
+path = "./dlq.jsonl"
+

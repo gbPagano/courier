@@ -15,6 +15,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::parse_config;
 use crate::envelope::Envelope;
+use crate::observability::trace_context::{TRACEPARENT, TRACESTATE};
+use crate::observability::{NodeCtx, SourceCtx};
 use crate::retry::RetryPolicy;
 use crate::sources::Source;
 
@@ -26,12 +28,15 @@ pub struct HttpWebhookSource {
     id: String,
     bind: SocketAddr,
     path: String,
+    source_ctx: SourceCtx,
 }
 
 impl HttpWebhookSource {
     pub fn new(id: impl Into<String>, bind: SocketAddr, path: impl Into<String>) -> Self {
+        let id = id.into();
         Self {
-            id: id.into(),
+            source_ctx: SourceCtx::new(&id),
+            id,
             bind,
             path: path.into(),
         }
@@ -44,10 +49,16 @@ impl Source for HttpWebhookSource {
         &self.id
     }
 
+    fn set_node_ctx(&mut self, ctx: NodeCtx) {
+        self.source_ctx = SourceCtx::from_node_ctx(ctx);
+    }
+
     async fn run(self: Box<Self>, tx: Sender<Envelope>, cancel: CancellationToken) {
         let state = WebhookState {
             source_id: self.id.clone(),
+            source_ctx: self.source_ctx.clone(),
             tx,
+            cancel: cancel.clone(),
         };
         let app = Router::new()
             .route(&self.path, post(handle_webhook))
@@ -82,7 +93,9 @@ impl Source for HttpWebhookSource {
 #[derive(Clone)]
 struct WebhookState {
     source_id: String,
+    source_ctx: SourceCtx,
     tx: Sender<Envelope>,
+    cancel: CancellationToken,
 }
 
 async fn handle_webhook(
@@ -104,7 +117,7 @@ async fn handle_webhook(
     let mut env = Envelope::new(&state.source_id, payload);
     capture_headers(&headers, &mut env);
 
-    match state.tx.send(env).await {
+    match state.source_ctx.send(&state.tx, env, &state.cancel).await {
         Ok(()) => (StatusCode::ACCEPTED, "accepted").into_response(),
         Err(_) => (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -123,9 +136,19 @@ fn capture_headers(headers: &HeaderMap, env: &mut Envelope) {
         let Ok(value) = value.to_str() else {
             continue;
         };
-        env.meta
-            .headers
-            .insert(format!("http.header.{}", name.as_str()), value.to_string());
+        let name_str = name.as_str();
+        if matches!(name_str, TRACEPARENT | TRACESTATE) {
+            // Trace-context headers are owned by the observability layer.
+            // Store them under the bare key so SourceCtx::send can refresh
+            // the span context without leaving a stale `http.header.*` copy.
+            env.meta
+                .headers
+                .insert(name_str.to_string(), value.to_string());
+        } else {
+            env.meta
+                .headers
+                .insert(format!("http.header.{}", name_str), value.to_string());
+        }
     }
 }
 
@@ -190,6 +213,10 @@ mod tests {
         let response = Client::new()
             .post(format!("http://{bind}/events"))
             .header("x-event-id", "evt-1")
+            .header(
+                "traceparent",
+                "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+            )
             .json(&json!({ "event": "created" }))
             .send()
             .await
@@ -207,6 +234,14 @@ mod tests {
         assert_eq!(
             env.meta.headers.get("http.header.x-event-id"),
             Some(&"evt-1".to_string())
+        );
+        assert!(env.meta.headers.contains_key(TRACEPARENT));
+        // Trace-context headers are not duplicated under http.header.* so
+        // that SourceCtx::send can refresh the bare key without leaving a
+        // stale copy behind.
+        assert!(
+            !env.meta.headers.contains_key("http.header.traceparent"),
+            "traceparent should not be duplicated under http.header.*"
         );
 
         cancel.cancel();
@@ -293,6 +328,52 @@ mod tests {
         assert_eq!(second_env.payload, json!({ "n": 2 }));
 
         cancel.cancel();
+        let _ = tokio::time::timeout(Duration::from_secs(1), source_handle).await;
+    }
+
+    #[tokio::test]
+    async fn blocked_request_returns_unavailable_when_cancelled() {
+        let bind = unused_local_addr();
+        let source = HttpWebhookSource::new("webhook", bind, "/events");
+        let (tx, _rx) = mpsc::channel(1);
+        let cancel = CancellationToken::new();
+
+        let c = cancel.clone();
+        let source_handle = tokio::spawn(async move { Box::new(source).run(tx, c).await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let client = Client::new();
+        let first = client
+            .post(format!("http://{bind}/events"))
+            .json(&json!({ "n": 1 }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::ACCEPTED);
+
+        let second_client = client.clone();
+        let second = tokio::spawn(async move {
+            second_client
+                .post(format!("http://{bind}/events"))
+                .json(&json!({ "n": 2 }))
+                .send()
+                .await
+                .unwrap()
+        });
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            !second.is_finished(),
+            "second request returned before cancellation"
+        );
+
+        cancel.cancel();
+        let second_response = tokio::time::timeout(Duration::from_secs(2), second)
+            .await
+            .expect("second request stayed blocked after cancellation")
+            .expect("second request task failed");
+        assert_eq!(second_response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
         let _ = tokio::time::timeout(Duration::from_secs(1), source_handle).await;
     }
 
