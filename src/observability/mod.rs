@@ -9,8 +9,8 @@
 //! - [`trace_context`] propagates W3C `traceparent` / `tracestate` through
 //!   envelope metadata.
 
-use std::sync::{Once, OnceLock};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Once, OnceLock};
 
 use anyhow::{Context, Result};
 use opentelemetry::trace::TracerProvider as _;

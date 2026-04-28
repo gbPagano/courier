@@ -373,7 +373,17 @@ mod tests {
         tracing::callsite::rebuild_interest_cache();
     }
 
-    struct HundredSource;
+    struct HundredSource {
+        source_ctx: SourceCtx,
+    }
+
+    impl HundredSource {
+        fn new() -> Self {
+            Self {
+                source_ctx: SourceCtx::new("src"),
+            }
+        }
+    }
 
     #[async_trait]
     impl Source for HundredSource {
@@ -381,14 +391,16 @@ mod tests {
             "src"
         }
 
-        async fn run(self: Box<Self>, tx: Sender<Envelope>, _cancel: CancellationToken) {
+        fn set_node_ctx(&mut self, ctx: NodeCtx) {
+            self.source_ctx = SourceCtx::from_node_ctx(ctx);
+        }
+
+        async fn run(self: Box<Self>, tx: Sender<Envelope>, cancel: CancellationToken) {
             for i in 0..100 {
-                if tx
-                    .send(Envelope::new("src", json!({ "n": i })))
-                    .await
-                    .is_err()
-                {
-                    break;
+                let env = Envelope::new("src", json!({ "n": i }));
+                match self.source_ctx.send(&tx, env, &cancel).await {
+                    Ok(()) => {}
+                    Err(SendStopped::Cancelled) | Err(SendStopped::DownstreamClosed) => break,
                 }
             }
         }
@@ -488,7 +500,7 @@ mod tests {
     #[tokio::test]
     async fn node_ctx_records_pipeline_metrics() {
         let (handle, exporter) = obs_handle_in_memory();
-        let pipeline = Pipeline::new("metrics", Box::new(HundredSource))
+        let pipeline = Pipeline::new("metrics", Box::new(HundredSource::new()))
             .with_observability(Some(handle.clone()))
             .with_transform(Box::new(BasicTransform::new(EvenOnly)))
             .with_sink(Box::new(ManagedSink::new(AcceptSink)));
@@ -497,6 +509,14 @@ mod tests {
         join_all(handles).await;
         handle.shutdown();
 
+        assert_eq!(
+            counter_sum(
+                &exporter,
+                "courier_envelopes_processed_total",
+                &[("pipeline", "metrics"), ("node_id", "metrics/src")]
+            ),
+            100
+        );
         assert_eq!(
             counter_sum(
                 &exporter,
@@ -520,6 +540,14 @@ mod tests {
                 &[("pipeline", "metrics"), ("node_id", "metrics/sink0")]
             ),
             50
+        );
+        assert_eq!(
+            histogram_count(
+                &exporter,
+                "courier_stage_duration_milliseconds",
+                &[("pipeline", "metrics"), ("node_id", "metrics/src")]
+            ),
+            100
         );
         assert_eq!(
             histogram_count(
