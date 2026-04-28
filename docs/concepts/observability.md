@@ -93,7 +93,7 @@ Every metric carries the labels `pipeline`, `node_id`, `node_kind`. No other lab
 | `courier_dead_lettered_total`              | counter   | 1    | sinks                    | Envelopes successfully appended to a dead-letter file after retries were exhausted. |
 | `courier_stage_duration_milliseconds`      | histogram | ms   | transforms, sinks        | Wall-clock time for one envelope through the node, including any retries. |
 | `courier_end_to_end_latency_milliseconds`  | histogram | ms   | sinks                    | `now − env.meta.timestamp_ms` at write completion. Skipped when the source did not stamp a timestamp or the clock looks skewed. |
-| `courier_channel_capacity_used`            | histogram | 1    | per mpsc edge (sampled)  | `channel_capacity − sender.capacity()` — items currently in flight on that edge. Sampled every 300 ms; carries `node_kind = "edge"` and `node_id = "{pipeline}/edge/{src}->{dst}"`. |
+| `courier_channel_capacity_used`            | histogram | 1    | per mpsc edge (sampled)  | `channel_capacity − sender.capacity()` — items currently in flight on that edge. Sampled every 300 ms (short bursts under 300 ms may not be sampled); carries `node_kind = "edge"` and `node_id = "{pipeline}/edge/{src}->{dst}"`. |
 
 A few semantic rules worth knowing:
 
