@@ -10,6 +10,7 @@
 //!   envelope metadata.
 
 use std::sync::{Once, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
 use opentelemetry::trace::TracerProvider as _;
@@ -33,6 +34,7 @@ pub use metrics::{NodeCtx, NodeKind, ObsHandle, init_metrics};
 pub use source_ctx::{SendStopped, SourceCtx};
 
 static INIT: Once = Once::new();
+static INIT_OK: AtomicBool = AtomicBool::new(false);
 static TRACER_PROVIDER: OnceLock<SdkTracerProvider> = OnceLock::new();
 static LOGGER_PROVIDER: OnceLock<SdkLoggerProvider> = OnceLock::new();
 
@@ -63,7 +65,13 @@ pub fn init_from_config(
     default_directive: &str,
 ) -> Result<()> {
     if INIT.is_completed() {
-        return Ok(());
+        if INIT_OK.load(Ordering::Acquire) {
+            return Ok(());
+        } else {
+            return Err(anyhow::anyhow!(
+                "tracing subscriber initialization failed on a previous attempt"
+            ));
+        }
     }
 
     let format = config.map(|c| c.log_format).unwrap_or_default();
@@ -71,15 +79,20 @@ pub fn init_from_config(
     let tracer_provider = init_traces(config)?;
     let logger_provider = init_logs(config)?;
     INIT.call_once(|| {
-        install(
+        let ok = install(
             format,
             configured_level.as_deref(),
             default_directive,
             tracer_provider,
             logger_provider,
-        )
+        );
+        INIT_OK.store(ok, Ordering::Release);
     });
-    Ok(())
+    if INIT_OK.load(Ordering::Acquire) {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("failed to install tracing subscriber"))
+    }
 }
 
 fn install(
@@ -88,7 +101,7 @@ fn install(
     default_directive: &str,
     tracer_provider: Option<SdkTracerProvider>,
     logger_provider: Option<SdkLoggerProvider>,
-) {
+) -> bool {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         EnvFilter::try_new(configured_level.unwrap_or(default_directive))
             .expect("configured/default log filter should be valid")
@@ -120,12 +133,13 @@ fn install(
         layer
     });
 
-    let _ = registry()
+    registry()
         .with(filter)
         .with(telemetry_layer)
         .with(otlp_log_layer)
         .with(fmt_layer)
-        .try_init();
+        .try_init()
+        .is_ok()
 }
 
 fn configured_endpoint(endpoint: Option<&str>) -> Option<&str> {
@@ -268,8 +282,17 @@ mod tests {
     fn init_from_config_second_call_is_noop() {
         let config = crate::config::ObservabilityConfig::default();
 
-        init_from_config(Some(&config), "off").unwrap();
-        init_from_config(Some(&config), "off").unwrap();
+        let first = init_from_config(Some(&config), "off");
+        let second = init_from_config(Some(&config), "off");
+
+        // Idempotent: both calls must return the same result.
+        // When another test has already installed a global subscriber,
+        // both calls will fail; otherwise both succeed.
+        assert_eq!(
+            first.is_ok(),
+            second.is_ok(),
+            "init_from_config should be idempotent: first={first:?}, second={second:?}"
+        );
     }
 
     #[test]
