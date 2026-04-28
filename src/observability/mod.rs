@@ -62,6 +62,10 @@ pub fn init_from_config(
     config: Option<&ObservabilityConfig>,
     default_directive: &str,
 ) -> Result<()> {
+    if INIT.is_completed() {
+        return Ok(());
+    }
+
     let format = config.map(|c| c.log_format).unwrap_or_default();
     let configured_level = config.and_then(|c| c.log_level.clone());
     let tracer_provider = init_traces(config)?;
@@ -184,25 +188,25 @@ fn init_logs(config: Option<&ObservabilityConfig>) -> Result<Option<SdkLoggerPro
     Ok(Some(provider))
 }
 
-pub fn force_flush_traces() {
+pub(crate) fn force_flush_traces() {
     if let Some(provider) = TRACER_PROVIDER.get() {
         let _ = provider.force_flush();
     }
 }
 
-pub fn shutdown_traces() {
+pub(crate) fn shutdown_traces() {
     if let Some(provider) = TRACER_PROVIDER.get() {
         let _ = provider.shutdown();
     }
 }
 
-pub fn force_flush_logs() {
+pub(crate) fn force_flush_logs() {
     if let Some(provider) = LOGGER_PROVIDER.get() {
         let _ = provider.force_flush();
     }
 }
 
-pub fn shutdown_logs() {
+pub(crate) fn shutdown_logs() {
     if let Some(provider) = LOGGER_PROVIDER.get() {
         let _ = provider.shutdown();
     }
@@ -212,7 +216,7 @@ pub fn shutdown_logs() {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use super::configured_endpoint;
+    use super::{configured_endpoint, init_from_config};
     use tracing::Subscriber;
     use tracing::subscriber::with_default;
     use tracing_log::LogTracer;
@@ -258,6 +262,14 @@ mod tests {
             configured_endpoint(Some("  http://collector:4317  ")),
             Some("http://collector:4317")
         );
+    }
+
+    #[test]
+    fn init_from_config_second_call_is_noop() {
+        let config = crate::config::ObservabilityConfig::default();
+
+        init_from_config(Some(&config), "off").unwrap();
+        init_from_config(Some(&config), "off").unwrap();
     }
 
     #[test]
