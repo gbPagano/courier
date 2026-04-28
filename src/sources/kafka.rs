@@ -194,6 +194,7 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    use rdkafka::message::{Header, OwnedHeaders};
     use rdkafka::producer::{FutureProducer, FutureRecord};
     use serde_json::json;
     use testcontainers_modules::kafka::apache::{self, KAFKA_PORT};
@@ -280,7 +281,14 @@ mod tests {
             while !produce_cancel.is_cancelled() {
                 let _ = producer
                     .send(
-                        FutureRecord::to(topic).key("k-1").payload(payload),
+                        FutureRecord::to(topic).key("k-1").payload(payload).headers(
+                            OwnedHeaders::new().insert(Header {
+                                key: TRACEPARENT,
+                                value: Some(
+                                    "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+                                ),
+                            }),
+                        ),
                         Duration::from_secs(5),
                     )
                     .await;
@@ -308,6 +316,10 @@ mod tests {
         assert!(
             env.meta.headers.contains_key("kafka.offset"),
             "missing kafka.offset header",
+        );
+        assert_eq!(
+            env.meta.headers.get(TRACEPARENT).map(String::as_str),
+            Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"),
         );
         Ok(())
     }
