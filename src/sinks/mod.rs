@@ -160,8 +160,10 @@ impl<W: WriteOne + 'static> Sink for ManagedSink<W> {
     }
 }
 
-/// Best-effort `now - env.meta.timestamp_ms`, skipped for missing or
-/// future timestamps.
+/// Best-effort `now - env.meta.timestamp_ms`. `Envelope::new` always
+/// stamps a timestamp, but a custom source could build an envelope
+/// directly from `Meta::default()` (where `timestamp_ms` is 0) — that
+/// case and any future-skewed clock are skipped.
 fn end_to_end_latency_ms(env: &Envelope) -> Option<f64> {
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
