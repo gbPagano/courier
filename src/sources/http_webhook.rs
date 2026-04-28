@@ -51,6 +51,7 @@ impl Source for HttpWebhookSource {
             source_id: self.id.clone(),
             source_ctx: SourceCtx::new(&self.id),
             tx,
+            cancel: cancel.clone(),
         };
         let app = Router::new()
             .route(&self.path, post(handle_webhook))
@@ -87,6 +88,7 @@ struct WebhookState {
     source_id: String,
     source_ctx: SourceCtx,
     tx: Sender<Envelope>,
+    cancel: CancellationToken,
 }
 
 async fn handle_webhook(
@@ -108,11 +110,7 @@ async fn handle_webhook(
     let mut env = Envelope::new(&state.source_id, payload);
     capture_headers(&headers, &mut env);
 
-    match state
-        .source_ctx
-        .send(&state.tx, env, &CancellationToken::new())
-        .await
-    {
+    match state.source_ctx.send(&state.tx, env, &state.cancel).await {
         Ok(()) => (StatusCode::ACCEPTED, "accepted").into_response(),
         Err(_) => (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -311,6 +309,52 @@ mod tests {
         assert_eq!(second_env.payload, json!({ "n": 2 }));
 
         cancel.cancel();
+        let _ = tokio::time::timeout(Duration::from_secs(1), source_handle).await;
+    }
+
+    #[tokio::test]
+    async fn blocked_request_returns_unavailable_when_cancelled() {
+        let bind = unused_local_addr();
+        let source = HttpWebhookSource::new("webhook", bind, "/events");
+        let (tx, _rx) = mpsc::channel(1);
+        let cancel = CancellationToken::new();
+
+        let c = cancel.clone();
+        let source_handle = tokio::spawn(async move { Box::new(source).run(tx, c).await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let client = Client::new();
+        let first = client
+            .post(format!("http://{bind}/events"))
+            .json(&json!({ "n": 1 }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::ACCEPTED);
+
+        let second_client = client.clone();
+        let second = tokio::spawn(async move {
+            second_client
+                .post(format!("http://{bind}/events"))
+                .json(&json!({ "n": 2 }))
+                .send()
+                .await
+                .unwrap()
+        });
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            !second.is_finished(),
+            "second request returned before cancellation"
+        );
+
+        cancel.cancel();
+        let second_response = tokio::time::timeout(Duration::from_secs(2), second)
+            .await
+            .expect("second request stayed blocked after cancellation")
+            .expect("second request task failed");
+        assert_eq!(second_response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
         let _ = tokio::time::timeout(Duration::from_secs(1), source_handle).await;
     }
 
