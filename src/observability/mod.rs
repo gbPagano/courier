@@ -9,6 +9,7 @@
 //! - [`trace_context`] propagates W3C `traceparent` / `tracestate` through
 //!   envelope metadata.
 
+use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Once, OnceLock};
 
@@ -76,9 +77,31 @@ pub fn init_from_config(
 
     let format = config.map(|c| c.log_format).unwrap_or_default();
     let configured_level = config.and_then(|c| c.log_level.clone());
-    let tracer_provider = init_traces(config)?;
-    let logger_provider = init_logs(config)?;
+
+    // Build OTLP providers inside `call_once` so two concurrent first
+    // calls cannot each construct an `SdkTracerProvider` /
+    // `SdkLoggerProvider` (the loser's would otherwise be dropped
+    // silently and trigger a no-op flush). The winning thread captures
+    // any exporter-build error in `provider_err` and propagates it
+    // here; the losing thread observes `INIT_OK` instead.
+    let provider_err: Cell<Option<anyhow::Error>> = Cell::new(None);
     INIT.call_once(|| {
+        let tracer_provider = match init_traces(config) {
+            Ok(p) => p,
+            Err(e) => {
+                provider_err.set(Some(e));
+                INIT_OK.store(false, Ordering::Release);
+                return;
+            }
+        };
+        let logger_provider = match init_logs(config) {
+            Ok(p) => p,
+            Err(e) => {
+                provider_err.set(Some(e));
+                INIT_OK.store(false, Ordering::Release);
+                return;
+            }
+        };
         let ok = install(
             format,
             configured_level.as_deref(),
@@ -88,6 +111,10 @@ pub fn init_from_config(
         );
         INIT_OK.store(ok, Ordering::Release);
     });
+
+    if let Some(err) = provider_err.take() {
+        return Err(err);
+    }
     if INIT_OK.load(Ordering::Acquire) {
         Ok(())
     } else {
