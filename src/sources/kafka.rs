@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 use crate::config::parse_config;
 use crate::envelope::Envelope;
 use crate::observability::trace_context::{TRACEPARENT, TRACESTATE};
-use crate::observability::{SendStopped, SourceCtx};
+use crate::observability::{NodeCtx, SendStopped, SourceCtx};
 use crate::retry::RetryPolicy;
 use crate::sources::Source;
 
@@ -26,10 +26,12 @@ use crate::sources::Source;
 pub struct KafkaSource {
     id: String,
     consumer: StreamConsumer,
+    source_ctx: SourceCtx,
 }
 
 impl KafkaSource {
     pub fn new(id: impl Into<String>, brokers: &str, group_id: &str, topics: Vec<&str>) -> Self {
+        let id = id.into();
         let consumer: StreamConsumer = ClientConfig::new()
             .set("group.id", group_id)
             .set("bootstrap.servers", brokers)
@@ -44,7 +46,8 @@ impl KafkaSource {
             .expect("Can't subscribe to specified topics");
 
         Self {
-            id: id.into(),
+            source_ctx: SourceCtx::new(&id),
+            id,
             consumer,
         }
     }
@@ -56,9 +59,13 @@ impl Source for KafkaSource {
         &self.id
     }
 
+    fn set_node_ctx(&mut self, ctx: NodeCtx) {
+        self.source_ctx = SourceCtx::from_node_ctx(ctx);
+    }
+
     async fn run(self: Box<Self>, tx: Sender<Envelope>, cancel: CancellationToken) {
         log::info!("[{}] starting kafka consumer", self.id);
-        let source_ctx = SourceCtx::new(&self.id);
+        let source_ctx = self.source_ctx.clone();
 
         loop {
             let msg = tokio::select! {

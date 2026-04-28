@@ -85,7 +85,7 @@ impl Pipeline {
 /// a slow sink applies backpressure to the whole pipeline.
 ///
 /// When the pipeline carries an `ObsHandle`, this function also:
-/// - mints a `NodeCtx` per transform/sink and attaches it via
+/// - mints a `NodeCtx` per source/transform/sink and attaches it via
 ///   `set_node_ctx`, so the wrapper runtimes can bump counters in
 ///   their hot loops without hashmap lookups,
 /// - spawns one channel-depth sampler task per mpsc edge that
@@ -94,7 +94,7 @@ impl Pipeline {
 pub(crate) fn spawn_pipeline(p: Pipeline, cancel: CancellationToken) -> Vec<JoinHandle<()>> {
     let Pipeline {
         id,
-        source,
+        mut source,
         mut transforms,
         mut sinks,
         channel_capacity: cap,
@@ -107,6 +107,15 @@ pub(crate) fn spawn_pipeline(p: Pipeline, cancel: CancellationToken) -> Vec<Join
     let (src_tx, mut prev_rx) = mpsc::channel::<Envelope>(cap);
     let mut prev_node_id = format!("{id}/src");
     let transforms_total = transforms.len();
+
+    if let Some(handle) = &obs {
+        source.set_node_ctx(NodeCtx::for_node(
+            &id,
+            &prev_node_id,
+            NodeKind::Source,
+            handle.clone(),
+        ));
+    }
 
     // Source-out edge sampler.
     if let Some(handle) = obs.as_ref().filter(|h| h.is_enabled()) {
@@ -412,7 +421,17 @@ mod tests {
         }
     }
 
-    struct TraceSource;
+    struct TraceSource {
+        source_ctx: SourceCtx,
+    }
+
+    impl TraceSource {
+        fn new() -> Self {
+            Self {
+                source_ctx: SourceCtx::new("trace/src"),
+            }
+        }
+    }
 
     #[async_trait]
     impl Source for TraceSource {
@@ -420,8 +439,12 @@ mod tests {
             "src"
         }
 
+        fn set_node_ctx(&mut self, ctx: NodeCtx) {
+            self.source_ctx = SourceCtx::from_node_ctx(ctx);
+        }
+
         async fn run(self: Box<Self>, tx: Sender<Envelope>, cancel: CancellationToken) {
-            let source = SourceCtx::new("trace/src");
+            let source = self.source_ctx.clone();
             let mut env = Envelope::new("src", json!({ "n": 1 }));
             env.meta.headers.insert(
                 TRACEPARENT.to_string(),
@@ -541,7 +564,14 @@ mod tests {
             runtime.block_on(async {
                 let cancel = CancellationToken::new();
                 let (source_tx, transform_rx) = mpsc::channel(8);
-                Box::new(TraceSource).run(source_tx, cancel.clone()).await;
+                let mut source = TraceSource::new();
+                source.set_node_ctx(NodeCtx::for_node(
+                    "trace",
+                    "trace/src",
+                    NodeKind::Source,
+                    metrics.clone(),
+                ));
+                Box::new(source).run(source_tx, cancel.clone()).await;
 
                 let (sink_tx, sink_rx) = mpsc::channel(8);
                 let mut transform = BasicTransform::new(PassThrough);
@@ -576,6 +606,17 @@ mod tests {
         );
 
         let spans = exporter.get_finished_spans().unwrap();
+        let source_span = spans
+            .iter()
+            .find(|s| s.name == "courier.source")
+            .unwrap_or_else(|| panic!("missing source span: {spans:?}"));
+        assert!(
+            source_span.attributes.iter().any(|attr| {
+                attr.key.as_str() == "pipeline"
+                    && matches!(&attr.value, opentelemetry::Value::String(value) if value.as_ref() == "trace")
+            }),
+            "source span missing pipeline attribute: {source_span:?}"
+        );
         assert!(
             spans.iter().any(|s| s.name == "courier.transform"),
             "missing transform span: {spans:?}"

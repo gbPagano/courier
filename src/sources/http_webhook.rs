@@ -15,8 +15,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::parse_config;
 use crate::envelope::Envelope;
-use crate::observability::SourceCtx;
 use crate::observability::trace_context::{TRACEPARENT, TRACESTATE};
+use crate::observability::{NodeCtx, SourceCtx};
 use crate::retry::RetryPolicy;
 use crate::sources::Source;
 
@@ -28,12 +28,15 @@ pub struct HttpWebhookSource {
     id: String,
     bind: SocketAddr,
     path: String,
+    source_ctx: SourceCtx,
 }
 
 impl HttpWebhookSource {
     pub fn new(id: impl Into<String>, bind: SocketAddr, path: impl Into<String>) -> Self {
+        let id = id.into();
         Self {
-            id: id.into(),
+            source_ctx: SourceCtx::new(&id),
+            id,
             bind,
             path: path.into(),
         }
@@ -46,10 +49,14 @@ impl Source for HttpWebhookSource {
         &self.id
     }
 
+    fn set_node_ctx(&mut self, ctx: NodeCtx) {
+        self.source_ctx = SourceCtx::from_node_ctx(ctx);
+    }
+
     async fn run(self: Box<Self>, tx: Sender<Envelope>, cancel: CancellationToken) {
         let state = WebhookState {
             source_id: self.id.clone(),
-            source_ctx: SourceCtx::new(&self.id),
+            source_ctx: self.source_ctx.clone(),
             tx,
             cancel: cancel.clone(),
         };
