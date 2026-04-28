@@ -24,9 +24,10 @@ Observability is driven entirely by an optional `[observability]` block in your 
 
 ```toml title="config.toml"
 [observability]
-log_format = "json"            # "text" (default) or "json"
-log_level  = "info"            # default filter when RUST_LOG is unset
-log_keys   = false             # allow meta.key in span fields (off by default)
+service_name = "courier"       # OTel resource service.name
+log_format   = "json"          # "text" (default) or "json"
+log_level    = "info"          # default filter when RUST_LOG is unset
+log_keys     = false           # allow meta.key in span fields (off by default)
 
 [observability.metrics]
 otlp_endpoint     = "http://collector:4317"
@@ -35,7 +36,6 @@ export_interval_ms = 15000     # OTLP push interval (default 15 s)
 [observability.tracing]
 otlp_endpoint = "http://collector:4317"
 sample_ratio  = 0.1            # parent-based sampling (0.0–1.0)
-service_name  = "courier"      # OTel resource service.name
 
 [observability.logs]
 otlp_endpoint = "http://collector:4317"   # bridge tracing events to OTLP logs

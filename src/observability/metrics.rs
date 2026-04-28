@@ -329,7 +329,7 @@ pub fn init_metrics(config: Option<&ObservabilityConfig>) -> Result<ObsHandle> {
         .build();
 
     let resource = Resource::builder()
-        .with_service_name(obs.tracing.service_name.clone())
+        .with_service_name(obs.service_name.clone())
         .build();
 
     let provider = SdkMeterProvider::builder()

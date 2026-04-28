@@ -153,7 +153,7 @@ fn init_traces(config: Option<&ObservabilityConfig>) -> Result<Option<SdkTracerP
         obs.tracing.sample_ratio,
     )));
     let resource = Resource::builder()
-        .with_service_name(obs.tracing.service_name.clone())
+        .with_service_name(obs.service_name.clone())
         .build();
     let provider = SdkTracerProvider::builder()
         .with_batch_exporter(exporter)
@@ -178,7 +178,7 @@ fn init_logs(config: Option<&ObservabilityConfig>) -> Result<Option<SdkLoggerPro
         .with_context(|| format!("failed to build OTLP log exporter for {endpoint}"))?;
 
     let resource = Resource::builder()
-        .with_service_name(obs.tracing.service_name.clone())
+        .with_service_name(obs.service_name.clone())
         .build();
 
     let provider = SdkLoggerProvider::builder()

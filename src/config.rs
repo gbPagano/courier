@@ -32,8 +32,10 @@ pub struct Config {
 
 /// Top-level observability settings. Every field defaults so an empty
 /// `[observability]` block matches the runtime's built-in behavior.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ObservabilityConfig {
+    /// `service.name` resource attribute on emitted telemetry.
+    pub service_name: String,
     pub log_format: LogFormat,
     /// Filter directive applied when `RUST_LOG` is unset. `RUST_LOG`
     /// keeps precedence over this, matching the prior `env_logger`
@@ -74,6 +76,20 @@ impl Default for MetricsConfig {
     }
 }
 
+impl Default for ObservabilityConfig {
+    fn default() -> Self {
+        Self {
+            service_name: "courier".to_string(),
+            log_format: LogFormat::Text,
+            log_level: None,
+            log_keys: false,
+            metrics: MetricsConfig::default(),
+            tracing: TracingConfig::default(),
+            logs: LogsConfig::default(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TracingConfig {
     /// OTLP endpoint to push spans to. `None` disables tracing export.
@@ -82,8 +98,6 @@ pub struct TracingConfig {
     /// every root, `1.0` keeps everything; default `0.1` is sane for
     /// most production workloads.
     pub sample_ratio: f64,
-    /// `service.name` resource attribute on emitted spans.
-    pub service_name: String,
 }
 
 impl Default for TracingConfig {
@@ -91,7 +105,6 @@ impl Default for TracingConfig {
         Self {
             otlp_endpoint: None,
             sample_ratio: 0.1,
-            service_name: "courier".to_string(),
         }
     }
 }
@@ -280,8 +293,8 @@ fn validate_observability(obs: &ObservabilityConfig) -> Result<()> {
             obs.tracing.sample_ratio
         );
     }
-    if obs.tracing.service_name.trim().is_empty() {
-        bail!("observability.tracing.service_name: must not be empty");
+    if obs.service_name.trim().is_empty() {
+        bail!("observability.service_name: must not be empty");
     }
     if obs.metrics.export_interval_ms == 0 {
         bail!("observability.metrics.export_interval_ms: must be greater than 0");
@@ -435,6 +448,8 @@ struct RawConfig {
 #[serde(deny_unknown_fields)]
 struct RawObservability {
     #[serde(default)]
+    service_name: Option<String>,
+    #[serde(default)]
     log_format: Option<RawLogFormat>,
     #[serde(default)]
     log_level: Option<String>,
@@ -472,8 +487,6 @@ struct RawTracingConfig {
     otlp_endpoint: Option<String>,
     #[serde(default)]
     sample_ratio: Option<f64>,
-    #[serde(default)]
-    service_name: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -584,7 +597,10 @@ impl From<RawConfig> for Config {
 
 fn observability_from_raw(value: RawObservability) -> ObservabilityConfig {
     let default = ObservabilityConfig::default();
+    let service_name = value.service_name.unwrap_or(default.service_name);
+
     ObservabilityConfig {
+        service_name,
         log_format: value
             .log_format
             .map(|f| match f {
@@ -611,7 +627,6 @@ fn observability_from_raw(value: RawObservability) -> ObservabilityConfig {
                 TracingConfig {
                     otlp_endpoint: t.otlp_endpoint,
                     sample_ratio: t.sample_ratio.unwrap_or(d.sample_ratio),
-                    service_name: t.service_name.unwrap_or(d.service_name),
                 }
             })
             .unwrap_or(default.tracing),
@@ -1682,6 +1697,7 @@ mod tests {
         let config = Config::from_toml_str(&format!(
             r#"
             [observability]
+            service_name = "courier-prod"
             log_format = "json"
             log_level = "courier=debug,hyper=warn"
             log_keys = true
@@ -1693,7 +1709,6 @@ mod tests {
             [observability.tracing]
             otlp_endpoint = "http://collector:4317"
             sample_ratio = 0.25
-            service_name = "courier-prod"
 
             [observability.logs]
             otlp_endpoint = "http://collector:4317"
@@ -1716,7 +1731,7 @@ mod tests {
             Some("http://collector:4317")
         );
         assert_eq!(obs.tracing.sample_ratio, 0.25);
-        assert_eq!(obs.tracing.service_name, "courier-prod");
+        assert_eq!(obs.service_name, "courier-prod");
         assert_eq!(
             obs.logs.otlp_endpoint.as_deref(),
             Some("http://collector:4317")
@@ -1728,12 +1743,12 @@ mod tests {
         let toml = Config::from_toml_str(&format!(
             r#"
             [observability]
+            service_name = "svc"
             log_format = "json"
             log_level = "info"
 
             [observability.tracing]
             sample_ratio = 0.5
-            service_name = "svc"
             {}"#,
             minimal_pipeline_block()
         ))
@@ -1742,9 +1757,10 @@ mod tests {
         let json = Config::from_json_str(
             r#"{
               "observability": {
+                "service_name": "svc",
                 "log_format": "json",
                 "log_level": "info",
-                "tracing": { "sample_ratio": 0.5, "service_name": "svc" }
+                "tracing": { "sample_ratio": 0.5 }
               },
               "pipelines": [
                 {
@@ -1761,12 +1777,28 @@ mod tests {
     }
 
     #[test]
+    fn tracing_service_name_is_rejected() {
+        let err = Config::from_toml_str(&format!(
+            r#"
+            [observability.tracing]
+            service_name = "legacy-svc"
+            {}"#,
+            minimal_pipeline_block()
+        ))
+        .expect_err("legacy tracing service_name should be rejected");
+
+        let msg = format!("{err:#}");
+        assert!(msg.contains("unknown field `service_name`"), "{msg}");
+    }
+
+    #[test]
     fn directory_mode_preserves_observability() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("a.toml"),
             r#"
             [observability]
+            service_name = "courier-prod"
             log_format = "json"
             log_level = "courier=debug"
             log_keys = true
@@ -1778,7 +1810,6 @@ mod tests {
             [observability.tracing]
             otlp_endpoint = "http://traces:4317"
             sample_ratio = 0.25
-            service_name = "courier-prod"
 
             [[pipelines]]
             name = "p1"
@@ -1819,7 +1850,7 @@ mod tests {
             Some("http://traces:4317")
         );
         assert_eq!(obs.tracing.sample_ratio, 0.25);
-        assert_eq!(obs.tracing.service_name, "courier-prod");
+        assert_eq!(obs.service_name, "courier-prod");
     }
 
     #[test]
@@ -1893,14 +1924,14 @@ mod tests {
     fn validate_rejects_empty_service_name() {
         let config = Config::from_toml_str(&format!(
             r#"
-            [observability.tracing]
+            [observability]
             service_name = ""
             {}"#,
             minimal_pipeline_block()
         ))
         .unwrap();
         let msg = format!("{:#}", config.validate().unwrap_err());
-        assert!(msg.contains("observability.tracing.service_name"), "{msg}");
+        assert!(msg.contains("observability.service_name"), "{msg}");
     }
 
     #[test]
