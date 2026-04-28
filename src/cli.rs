@@ -71,7 +71,11 @@ pub fn build_runtime_from_config(config: Config, source: &Path) -> Result<Courie
 }
 
 pub fn validate_config(path: &Path) -> Result<()> {
-    build_runtime(path).map(drop)
+    let config = Config::load(path)?;
+    let registry = Registry::with_builtins()?;
+    registry
+        .dry_run_build(config)
+        .with_context(|| format!("failed to build runtime from config {}", path.display()))
 }
 
 pub fn list_components(registry: &Registry) -> String {

@@ -215,6 +215,20 @@ impl Registry {
             .with_metrics(metrics))
     }
 
+    /// Validate `config` and exercise every component factory without
+    /// producing a runtime. `courier validate` uses this so OTLP
+    /// exporters and metric providers are never constructed during a
+    /// pure config check.
+    pub fn dry_run_build(&self, config: Config) -> Result<()> {
+        config.validate()?;
+        for spec in config.pipelines {
+            let name = spec.name.clone();
+            self.build_pipeline(spec)
+                .with_context(|| format!("failed to build pipeline '{name}'"))?;
+        }
+        Ok(())
+    }
+
     fn build_pipeline(&self, spec: PipelineSpec) -> Result<Pipeline> {
         let name = spec.name;
         let source = self
