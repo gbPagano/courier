@@ -646,7 +646,8 @@ async fn python_script_transform_end_to_end() {
         .unwrap();
 
     let courier = registry
-        .build_courier(Config { observability: None,
+        .build_courier(Config {
+            observability: None,
             pipelines: vec![PipelineSpec {
                 name: "python-scripted".into(),
                 source: SourceSpec {
@@ -766,7 +767,8 @@ async fn script_transform_chains_rhai_then_python() {
         .unwrap();
 
     let courier = registry
-        .build_courier(Config { observability: None,
+        .build_courier(Config {
+            observability: None,
             pipelines: vec![PipelineSpec {
                 name: "rhai-then-python".into(),
                 source: SourceSpec {
@@ -934,7 +936,8 @@ async fn python_script_transform_drop_policy_continues_after_error() {
         .unwrap();
 
     let courier = registry
-        .build_courier(Config { observability: None,
+        .build_courier(Config {
+            observability: None,
             pipelines: vec![PipelineSpec {
                 name: "python-drop-errors".into(),
                 source: SourceSpec {
@@ -1001,7 +1004,8 @@ async fn python_script_transform_fail_pipeline_stops_after_error() {
         .unwrap();
 
     let courier = registry
-        .build_courier(Config { observability: None,
+        .build_courier(Config {
+            observability: None,
             pipelines: vec![PipelineSpec {
                 name: "python-fail-pipeline".into(),
                 source: SourceSpec {

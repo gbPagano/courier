@@ -280,7 +280,8 @@ async fn built_in_python_script_transform_runs_through_registry() {
         .unwrap();
 
     let courier = registry
-        .build_courier(Config { observability: None,
+        .build_courier(Config {
+            observability: None,
             pipelines: vec![PipelineSpec {
                 name: "python-scripted".into(),
                 source: SourceSpec {
@@ -330,7 +331,8 @@ async fn built_in_python_script_transform_supports_custom_entrypoint() {
         .unwrap();
 
     let courier = registry
-        .build_courier(Config { observability: None,
+        .build_courier(Config {
+            observability: None,
             pipelines: vec![PipelineSpec {
                 name: "python-custom-entrypoint".into(),
                 source: SourceSpec {
