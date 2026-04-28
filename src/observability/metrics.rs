@@ -94,8 +94,12 @@ impl ObsHandle {
     /// provider do not receive Courier metrics when Courier metrics
     /// are disabled.
     pub fn noop() -> Self {
+        Self::noop_with_log_keys(false)
+    }
+
+    fn noop_with_log_keys(log_keys: bool) -> Self {
         let meter = Meter::new(Arc::new(NoopInstrumentProvider));
-        Self::from_meter(meter, None, false)
+        Self::from_meter(meter, None, log_keys)
     }
 
     /// Whether this handle owns a concrete SDK provider. False means
@@ -315,7 +319,7 @@ pub fn init_metrics(config: Option<&ObservabilityConfig>) -> Result<ObsHandle> {
         return Ok(ObsHandle::noop());
     };
     let Some(endpoint) = super::configured_endpoint(obs.metrics.otlp_endpoint.as_deref()) else {
-        return Ok(ObsHandle::noop());
+        return Ok(ObsHandle::noop_with_log_keys(obs.log_keys));
     };
 
     let exporter = MetricExporter::builder()
@@ -493,5 +497,19 @@ mod tests {
             counter_sum(&exporter, "courier_envelopes_failed_total", &[]),
             0
         );
+    }
+
+    #[test]
+    fn init_metrics_preserves_log_keys_when_exporter_is_disabled() {
+        let obs = ObservabilityConfig {
+            log_keys: true,
+            ..ObservabilityConfig::default()
+        };
+
+        let handle = init_metrics(Some(&obs)).unwrap();
+        assert!(!handle.is_enabled());
+
+        let ctx = NodeCtx::for_node("p", "p/source", NodeKind::Source, handle);
+        assert!(ctx.log_keys());
     }
 }
