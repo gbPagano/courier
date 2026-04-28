@@ -136,13 +136,18 @@ fn capture_headers(headers: &HeaderMap, env: &mut Envelope) {
         let Ok(value) = value.to_str() else {
             continue;
         };
-        env.meta
-            .headers
-            .insert(format!("http.header.{}", name.as_str()), value.to_string());
-        if matches!(name.as_str(), TRACEPARENT | TRACESTATE) {
+        let name_str = name.as_str();
+        if matches!(name_str, TRACEPARENT | TRACESTATE) {
+            // Trace-context headers are owned by the observability layer.
+            // Store them under the bare key so SourceCtx::send can refresh
+            // the span context without leaving a stale `http.header.*` copy.
             env.meta
                 .headers
-                .insert(name.as_str().to_string(), value.to_string());
+                .insert(name_str.to_string(), value.to_string());
+        } else {
+            env.meta
+                .headers
+                .insert(format!("http.header.{}", name_str), value.to_string());
         }
     }
 }
@@ -231,6 +236,13 @@ mod tests {
             Some(&"evt-1".to_string())
         );
         assert!(env.meta.headers.contains_key(TRACEPARENT));
+        // Trace-context headers are not duplicated under http.header.* so
+        // that SourceCtx::send can refresh the bare key without leaving a
+        // stale copy behind.
+        assert!(
+            !env.meta.headers.contains_key("http.header.traceparent"),
+            "traceparent should not be duplicated under http.header.*"
+        );
 
         cancel.cancel();
         let _ = tokio::time::timeout(Duration::from_secs(1), handle).await;
