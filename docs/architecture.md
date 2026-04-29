@@ -1,3 +1,7 @@
+---
+icon: lucide/network
+---
+
 # Architecture
 
 A Courier **pipeline** is a directed acyclic graph:
@@ -12,7 +16,7 @@ Each node runs as its own Tokio task and communicates with its neighbors through
 
 | Type        | Lives in              | Role |
 | ----------- | --------------------- | ---- |
-| `Envelope`  | `src/envelope.rs`     | Single wire type between nodes — see [Envelope](envelope.md). |
+| `Envelope`  | `src/envelope.rs`     | Single wire type between nodes — see [Envelope](concepts/envelope.md). |
 | `Pipeline`  | `src/pipeline.rs`     | One source, zero or more transforms, one or more sinks, plus a `channel_capacity`. |
 | `Courier`   | `src/lib.rs`          | Collection of pipelines. `run()` spawns the tasks and installs a SIGINT handler that fires a shared `CancellationToken`. |
 
@@ -30,7 +34,7 @@ Each role has two traits — a **full-control** one that owns the channel loop, 
 
 `MapOne::map(env) -> Result<Option<Envelope>>` makes filtering implicit — return `Ok(None)` to drop. `WriteOne::write(&env)` keeps sinks focused on the side effect.
 
-`BasicTransform` and `ManagedSink` own the recv loop, honor the `CancellationToken`, and apply the configured [`ErrorPolicy`](../configuration/error-handling.md). `ManagedSink` additionally drives the optional retry policy and the dead-letter destination.
+`BasicTransform` and `ManagedSink` own the recv loop, honor the `CancellationToken`, and apply the configured [`ErrorPolicy`](configuration/error-handling.md). `ManagedSink` additionally drives the optional retry policy and the dead-letter destination.
 
 ## Component registry
 
@@ -46,7 +50,7 @@ The plugin model has three tiers:
 
 ## Runtime
 
-`spawn_pipeline` (in `src/pipeline.rs`) wires `source → transforms → sinks` with bounded mpsc channels. When `sinks.len() > 1`, an implicit broadcast splitter is inserted that clones each envelope to every sink. The splitter is synchronous per sink — a slow sink applies backpressure to the whole pipeline by design. See [Backpressure](backpressure.md).
+`spawn_pipeline` (in `src/pipeline.rs`) wires `source → transforms → sinks` with bounded mpsc channels. When `sinks.len() > 1`, an implicit broadcast splitter is inserted that clones each envelope to every sink. The splitter is synchronous per sink — a slow sink applies backpressure to the whole pipeline by design. See [Backpressure](concepts/backpressure.md).
 
 `Courier::run()`:
 

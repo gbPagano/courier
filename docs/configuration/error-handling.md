@@ -1,3 +1,7 @@
+---
+icon: lucide/rotate-ccw
+---
+
 # Error handling & retry
 
 Transforms and sinks can independently configure how they react to failures. Sinks additionally support automatic retry with a configurable backoff and dead-letter routing.

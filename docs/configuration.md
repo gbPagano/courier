@@ -107,6 +107,9 @@ cargo run -- run --config config.toml
 
 - **[Pipelines](pipelines.md)** — the configuration schema for sources, transforms, sinks, and channels.
 - **[Error Handling & Retry](error-handling.md)** — `on_error`, retry policies, and dead-letter routing.
+- **[Sources](sources.md)** — source configuration reference.
+- **[Transforms](transforms.md)** — transform configuration reference.
+- **[Sinks](sinks.md)** — sink configuration reference.
 
 ## Minimal example
 

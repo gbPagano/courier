@@ -1,3 +1,7 @@
+---
+icon: lucide/rocket
+---
+
 # Quickstart
 
 This page walks you through a minimal pipeline that polls a public HTTP endpoint and writes each response to a Kafka topic.
@@ -30,7 +34,7 @@ A few things to notice:
 
 - `channel_capacity` is the buffer size for every mpsc edge in the pipeline. Smaller numbers tighten [backpressure](../concepts/backpressure.md).
 - `pipelines.sinks` is a list — Courier inserts a broadcast splitter automatically when there is more than one sink.
-- `type = "api_poll"` and `type = "kafka"` resolve to built-in factories from the [component registry](../concepts/architecture.md#component-registry).
+- `type = "api_poll"` and `type = "kafka"` resolve to built-in factories from the [component registry](../architecture.md#component-registry).
 
 ## 3. Run
 
@@ -68,6 +72,6 @@ Restart the binary — there is no compile step.
 
 ## Next steps
 
-- [Configuration](../configuration/index.md) — full schema for pipelines, error policies, and retry.
+- [Configuration](../configuration.md) — full schema for pipelines, error policies, and retry.
 - [Components](../components/index.md) — reference for every built-in source, transform, and sink.
-- [Examples](../examples.md) — end-to-end recipes covering more topologies.
+- [Examples](../examples/) — end-to-end recipes covering more topologies.

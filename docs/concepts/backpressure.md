@@ -1,3 +1,7 @@
+---
+icon: lucide/gauge
+---
+
 # Backpressure
 
 Courier does not have a global rate limiter or scheduler. End-to-end flow control comes entirely from the bounded `tokio::mpsc` channels between nodes.

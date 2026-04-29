@@ -1,3 +1,7 @@
+---
+icon: lucide/moon
+---
+
 # Lua
 
 The Lua runtime is embedded in-process via [`mlua`](https://github.com/mlua-rs/mlua). Use it when you want familiar Lua syntax for small transforms.

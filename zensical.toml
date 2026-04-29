@@ -58,22 +58,30 @@ nav = [
         { "Quickstart" = "getting-started/quickstart.md" },
     ] },
     { "Configuration" = [
-        { "Overview" = "configuration/index.md" },
-        { "Pipelines" = "configuration/pipelines.md" },
-        { "Error Handling & Retry" = "configuration/error-handling.md" },
+        { "Overview" = "configuration.md" },
+        { "References" = [
+            { "Overview" = "configuration/references/index.md" },
+            { "Pipelines" = "configuration/pipelines.md" },
+            { "Error Handling & Retry" = "configuration/error-handling.md" },
+            { "Sources" = "configuration/sources.md" },
+            { "Transforms" = "configuration/transforms.md" },
+            { "Sinks" = "configuration/sinks.md" },
+        ] },
     ] },
-    { "Concepts" = [
-        { "Overview" = "concepts/index.md" },
-        { "Architecture" = "concepts/architecture.md" },
-        { "Envelope" = "concepts/envelope.md" },
-        { "Backpressure" = "concepts/backpressure.md" },
-        { "Observability" = "concepts/observability.md" },
-    ] },
-    { "Components" = [
-        { "Overview" = "components/index.md" },
-        { "Sources" = "components/sources.md" },
-        { "Transforms" = "components/transforms.md" },
-        { "Sinks" = "components/sinks.md" },
+    { "Architecture" = [
+        { "Overview" = "architecture.md" },
+        { "Concepts" = [
+            { "Overview" = "concepts/index.md" },
+            { "Envelope" = "concepts/envelope.md" },
+            { "Backpressure" = "concepts/backpressure.md" },
+            { "Observability" = "concepts/observability.md" },
+        ] },
+        { "Components" = [
+            { "Overview" = "components/index.md" },
+            { "Sources" = "components/sources.md" },
+            { "Transforms" = "components/transforms.md" },
+            { "Sinks" = "components/sinks.md" },
+        ] },
     ] },
     { "Scripting" = [
         { "Overview" = "scripting/index.md" },
@@ -81,8 +89,29 @@ nav = [
         { "Lua" = "scripting/lua.md" },
         { "Python" = "scripting/python.md" },
     ] },
-    { "Examples" = "examples.md" },
-    { "Contributing" = "contributing.md" },
+    { "Examples" = [
+        { "Recipes" = [
+            { "Overview" = "examples/index.md" },
+            { "Pipelines" = "examples/recipes/pipelines.md" },
+            { "Transforms" = "examples/recipes/transforms.md" },
+            { "Reliability" = "examples/recipes/reliability.md" },
+            { "Observability" = "examples/recipes/observability.md" },
+        ] },
+    ] },
+    { "Contributing" = [
+        { "Contribute" = [
+            { "Overview" = "contributing/contribute/index.md" },
+            { "Bug reports" = "contributing/contribute/bug-reports.md" },
+            { "Documentation" = "contributing/contribute/documentation.md" },
+            { "Change requests" = "contributing/contribute/change-requests.md" },
+            { "Pull requests" = "contributing/contribute/pull-requests.md" },
+            { "Code of conduct" = "contributing/contribute/code-of-conduct.md" },
+        ] },
+        { "Guides" = [
+            { "Overview" = "contributing/guides/index.md" },
+            { "Development" = "contributing/guides/development.md" },
+        ] },
+    ] },
 ]
 
 # With the "extra_css" option you can add your own CSS styling to customize

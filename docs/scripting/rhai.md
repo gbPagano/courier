@@ -1,3 +1,7 @@
+---
+icon: lucide/scroll-text
+---
+
 # Rhai
 
 [Rhai](https://rhai.rs) is a small embedded scripting language for Rust. It runs in-process, supports a configurable execution budget, and is the default choice for short transforms.

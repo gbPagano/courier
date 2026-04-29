@@ -1,3 +1,7 @@
+---
+icon: lucide/terminal
+---
+
 # Python
 
 The Python runtime runs your script in a `python3` subprocess and communicates over a small worker protocol on stdin/stdout. Use it when you need access to the Python ecosystem from a transform.

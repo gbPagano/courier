@@ -22,14 +22,13 @@ hide:
 <div class="grid cards" markdown>
 
 - :material-clock-fast: **[Getting Started](getting-started/index.md)** — install Courier and run your first pipeline.
-- :material-cog: **[Configuration](configuration/index.md)** — write `config.toml` files and tune error handling.
-- :material-graph-outline: **[Concepts](concepts/index.md)** — understand the runtime, the envelope, and backpressure.
-- :material-puzzle: **[Components](components/index.md)** — reference for built-in sources, transforms, and sinks.
+- :material-cog: **[Configuration](configuration.md)** — write `config.toml` files and tune error handling.
+- :material-graph-outline: **[Architecture](architecture.md)** — understand the runtime, components, envelope, and backpressure.
 - :material-script-text: **[Scripting](scripting/index.md)** — write transforms in Rhai, Lua, or Python.
-- :material-book-open-page-variant: **[Examples](examples.md)** — end-to-end pipeline recipes.
+- :material-book-open-page-variant: **[Examples](examples/)** — end-to-end pipeline recipes.
 
 </div>
 
 ## Project status
 
-Courier is pre-1.0. Treat the public API, configuration schema, and on-disk formats (including the dead-letter file format) as provisional. Breaking changes will be called out in the [contributing guide](contributing.md) and release notes.
+Courier is pre-1.0. Treat the public API, configuration schema, and on-disk formats (including the dead-letter file format) as provisional. Breaking changes will be called out in the [contributing guide](contributing/contribute/) and release notes.

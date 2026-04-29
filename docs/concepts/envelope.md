@@ -1,3 +1,7 @@
+---
+icon: lucide/package
+---
+
 # Envelope
 
 The `Envelope` is the single message type that flows between every Courier node. It lives in `src/envelope.rs` and is a small, deliberately generic shape:

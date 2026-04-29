@@ -1,3 +1,7 @@
+---
+icon: lucide/git-branch
+---
+
 # Pipeline configuration
 
 A configuration file declares a list of pipelines. Each pipeline has exactly one **source**, zero or more **transforms** in order, and one or more **sinks**.
@@ -26,8 +30,8 @@ type = "kafka"
 | ------------------ | -------- | ----------- |
 | `name`             | yes      | Non-empty unique identifier; appears in log/metric node ids. |
 | `channel_capacity` | no       | Buffer size for each `tokio::mpsc` edge inside the pipeline. Must be greater than `0`. Smaller values tighten [backpressure](../concepts/backpressure.md). |
-| `source`           | yes      | Exactly one source. See [Sources](../components/sources.md). |
-| `transforms`       | no       | Ordered list of transforms. See [Transforms](../components/transforms.md). |
+| `source`           | yes      | Exactly one source. See [Sources](../components/sources.md) and the [source config reference](sources.md#api_poll). |
+| `transforms`       | no       | Ordered list of transforms. See [Transforms](../components/transforms.md) and the [transform config reference](transforms.md#set_key). |
 | `sinks`            | yes      | One or more sinks. With more than one, Courier inserts a broadcast splitter — every envelope is cloned to every sink, and a slow sink applies backpressure to the whole pipeline. |
 
 ## Component shape
@@ -50,7 +54,7 @@ kind = "propagate"           # or "dead_letter" with a `path`
 # any remaining fields are passed to the component-specific factory
 ```
 
-The `type` field is matched against the registered `kind` in the [component registry](../concepts/architecture.md#component-registry). Each category (source / transform / sink) has its own namespace, so `"kafka"` can be both a source and a sink without collision.
+The `type` field is matched against the registered `kind` in the [component registry](../architecture.md#component-registry). Each category (source / transform / sink) has its own namespace, so `"kafka"` can be both a source and a sink without collision.
 
 ## Multiple files (directory mode)
 

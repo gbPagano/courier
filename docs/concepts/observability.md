@@ -1,3 +1,7 @@
+---
+icon: lucide/activity
+---
+
 # Observability
 
 Courier ships a single, opt-in observability layer that produces structured logs (`tracing`), metrics, and W3C-propagated traces from the same in-process call sites. Every signal is exported via **OTLP** to an [OpenTelemetry Collector](https://opentelemetry.io/docs/collector/); Courier itself does **not** host a Prometheus scrape endpoint or a UI.
