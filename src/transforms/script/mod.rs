@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::config::parse_config;
+use crate::config::{parse_config, redact_secret_path};
 use crate::envelope::Envelope;
 use crate::pipeline::ErrorPolicy;
 use crate::transforms::{BasicTransform, MapOne, Transform};
@@ -131,8 +131,9 @@ impl RawScriptTransformConfig {
                 bail!("script transform: one of 'script' or 'script_file' is required")
             }
             (Some(script), None) => script,
-            (None, Some(path)) => std::fs::read_to_string(&path)
-                .with_context(|| format!("failed to read script_file '{}'", path.display()))?,
+            (None, Some(path)) => std::fs::read_to_string(&path).with_context(|| {
+                format!("failed to read script_file '{}'", redact_secret_path(&path))
+            })?,
         };
 
         let has_rhai_limits = max_operations.is_some()

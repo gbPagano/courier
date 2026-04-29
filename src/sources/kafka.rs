@@ -9,7 +9,7 @@ use serde_json::Value;
 use tokio::sync::mpsc::Sender;
 use tokio_util::sync::CancellationToken;
 
-use crate::config::parse_config;
+use crate::config::{parse_config, redact_secret};
 use crate::envelope::Envelope;
 use crate::observability::trace_context::{TRACEPARENT, TRACESTATE};
 use crate::observability::{NodeCtx, SendStopped, SourceCtx};
@@ -64,19 +64,19 @@ impl Source for KafkaSource {
     }
 
     async fn run(self: Box<Self>, tx: Sender<Envelope>, cancel: CancellationToken) {
-        log::info!("[{}] starting kafka consumer", self.id);
+        log::info!("[{}] starting kafka consumer", redact_secret(&self.id));
         let source_ctx = self.source_ctx.clone();
 
         loop {
             let msg = tokio::select! {
                 _ = cancel.cancelled() => {
-                    log::info!("[{}] cancelled", self.id);
+                    log::info!("[{}] cancelled", redact_secret(&self.id));
                     return;
                 }
                 result = self.consumer.recv() => match result {
                     Ok(m) => m,
                     Err(e) => {
-                        log::error!("[{}] kafka recv error: {e}", self.id);
+                        log::error!("[{}] kafka recv error: {e}", redact_secret(&self.id));
                         continue;
                     }
                 },
@@ -94,7 +94,10 @@ impl Source for KafkaSource {
             let payload_bytes = match msg.payload() {
                 Some(p) => p,
                 None => {
-                    log::error!("[{}] message at offset {offset} has no payload", self.id);
+                    log::error!(
+                        "[{}] message at offset {offset} has no payload",
+                        redact_secret(&self.id)
+                    );
                     continue;
                 }
             };
@@ -104,7 +107,7 @@ impl Source for KafkaSource {
                 Err(e) => {
                     log::error!(
                         "[{}] failed to deserialize at offset {offset}: {e}",
-                        self.id,
+                        redact_secret(&self.id),
                     );
                     continue;
                 }
@@ -133,14 +136,15 @@ impl Source for KafkaSource {
 
             log::debug!(
                 "[{}] received topic={topic} partition={partition} offset={offset}",
-                self.id,
+                redact_secret(&self.id),
+                topic = redact_secret(&topic),
             );
 
             match source_ctx.send(&tx, env, &cancel).await {
                 Ok(()) => {}
                 Err(SendStopped::Cancelled) => return,
                 Err(SendStopped::DownstreamClosed) => {
-                    log::info!("[{}] downstream closed, stopping", self.id);
+                    log::info!("[{}] downstream closed, stopping", redact_secret(&self.id));
                     return;
                 }
             }

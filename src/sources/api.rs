@@ -8,7 +8,7 @@ use tokio::sync::mpsc::Sender;
 use tokio::time::{MissedTickBehavior, interval};
 use tokio_util::sync::CancellationToken;
 
-use crate::config::parse_config;
+use crate::config::{parse_config, redact_secret};
 use crate::envelope::Envelope;
 use crate::observability::{NodeCtx, SendStopped, SourceCtx};
 use crate::retry::RetryPolicy;
@@ -64,7 +64,11 @@ impl Source for ApiPollSource {
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
         ticker.tick().await; // first tick completes immediately
 
-        log::info!("[{}] starting poll loop at {:?}", self.id, self.interval);
+        log::info!(
+            "[{}] starting poll loop at {:?}",
+            redact_secret(&self.id),
+            self.interval
+        );
         let source_ctx = self.source_ctx.clone();
 
         loop {
@@ -72,7 +76,7 @@ impl Source for ApiPollSource {
 
             let payload = tokio::select! {
                 _ = cancel.cancelled() => {
-                    log::info!("[{}] cancelled", self.id);
+                    log::info!("[{}] cancelled", redact_secret(&self.id));
                     return;
                 }
                 result = fetch(&self.url) => match result {
@@ -81,7 +85,7 @@ impl Source for ApiPollSource {
                         let delay = scheduler.record_failure();
                         log::error!(
                             "[{}] fetch failed (consecutive failures: {}), next attempt in {:?}: {e}",
-                            self.id,
+                            redact_secret(&self.id),
                             scheduler.consecutive_failures(),
                             delay,
                         );
@@ -101,14 +105,18 @@ impl Source for ApiPollSource {
             };
 
             scheduler.record_success();
-            log::debug!("[{}] fetch completed in {:?}", self.id, start.elapsed());
+            log::debug!(
+                "[{}] fetch completed in {:?}",
+                redact_secret(&self.id),
+                start.elapsed()
+            );
 
             let env = Envelope::new(&self.id, payload);
             match source_ctx.send(&tx, env, &cancel).await {
                 Ok(()) => {}
                 Err(SendStopped::Cancelled) => return,
                 Err(SendStopped::DownstreamClosed) => {
-                    log::info!("[{}] downstream closed, stopping", self.id);
+                    log::info!("[{}] downstream closed, stopping", redact_secret(&self.id));
                     return;
                 }
             }
@@ -117,7 +125,7 @@ impl Source for ApiPollSource {
             if elapsed > self.interval {
                 log::warn!(
                     "[{}] iteration took {:?}, exceeding interval {:?}",
-                    self.id,
+                    redact_secret(&self.id),
                     elapsed,
                     self.interval,
                 );
@@ -132,11 +140,20 @@ impl Source for ApiPollSource {
 }
 
 async fn fetch(url: &str) -> anyhow::Result<Value> {
-    let resp = reqwest::get(url).await?;
+    let resp = reqwest::get(url).await.map_err(|e| {
+        let e = e.without_url();
+        anyhow::anyhow!("HTTP request to {} failed: {e}", redact_secret(url))
+    })?;
     if !resp.status().is_success() {
         return Err(anyhow::anyhow!("HTTP error: {}", resp.status()));
     }
-    Ok(resp.json::<Value>().await?)
+    resp.json::<Value>().await.map_err(|e| {
+        let e = e.without_url();
+        anyhow::anyhow!(
+            "HTTP response from {} was not valid JSON: {e}",
+            redact_secret(url)
+        )
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -158,7 +175,7 @@ pub fn api_poll_source_factory(
     reqwest::Url::parse(&config.url).with_context(|| {
         format!(
             "invalid config for component type 'api_poll': invalid url '{}'",
-            config.url
+            redact_secret(&config.url)
         )
     })?;
     if config.interval_secs == 0 {
@@ -178,6 +195,17 @@ mod tests {
     use tokio::sync::mpsc;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn closing_local_url(path: &str) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            if let Ok((stream, _)) = listener.accept() {
+                drop(stream);
+            }
+        });
+        format!("http://{addr}{path}")
+    }
 
     #[test]
     fn factory_rejects_invalid_url() {
@@ -216,6 +244,15 @@ mod tests {
             msg.contains("interval_secs must be greater than 0"),
             "{msg}"
         );
+    }
+
+    #[tokio::test]
+    async fn fetch_errors_do_not_repeat_url_from_reqwest_error() {
+        let url = closing_local_url("/token-in-url");
+
+        let err = fetch(&url).await.expect_err("expected connection failure");
+        let msg = format!("{err:#}");
+        assert_eq!(msg.matches(&url).count(), 1, "{msg}");
     }
 
     #[tokio::test]

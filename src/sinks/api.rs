@@ -8,7 +8,7 @@ use reqwest::{Client, Method, Url};
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::config::parse_config;
+use crate::config::{parse_config, redact_secret};
 use crate::envelope::Envelope;
 use crate::observability::trace_context::{TRACEPARENT, TRACESTATE};
 use crate::pipeline::ErrorPolicy;
@@ -103,7 +103,10 @@ impl WriteOne for ApiSink {
             .json(body)
             .send()
             .await
-            .map_err(|e| anyhow!("HTTP request failed: {e}"))?;
+            .map_err(|e| {
+                let e = e.without_url();
+                anyhow!("HTTP request to {} failed: {e}", redact_secret(&self.url))
+            })?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -113,7 +116,13 @@ impl WriteOne for ApiSink {
             return Err(anyhow!("HTTP error {status}: {body}"));
         }
 
-        log::debug!("[{}] {} {} -> {}", self.id, self.method, self.url, status);
+        log::debug!(
+            "[{}] {} {} -> {}",
+            redact_secret(&self.id),
+            self.method,
+            redact_secret(&self.url),
+            status
+        );
         Ok(())
     }
 }
@@ -146,14 +155,17 @@ pub fn api_sink_factory(
     Url::parse(&config.url).with_context(|| {
         format!(
             "invalid config for component type 'api': invalid url '{}'",
-            config.url
+            redact_secret(&config.url)
         )
     })?;
 
     let method = match config.method.as_deref() {
         None => Method::POST,
         Some(m) => m.parse::<Method>().map_err(|_| {
-            anyhow!("invalid config for component type 'api': unsupported HTTP method '{m}'")
+            anyhow!(
+                "invalid config for component type 'api': unsupported HTTP method '{}'",
+                redact_secret(m)
+            )
         })?,
     };
 
@@ -192,6 +204,17 @@ mod tests {
         body_format: BodyFormat,
     ) -> ApiSink {
         ApiSink::new("api-sink", url, method, headers, body_format, None).unwrap()
+    }
+
+    fn closing_local_url(path: &str) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            if let Ok((stream, _)) = listener.accept() {
+                drop(stream);
+            }
+        });
+        format!("http://{addr}{path}")
     }
 
     #[test]
@@ -372,6 +395,27 @@ mod tests {
         let msg = format!("{err:#}");
         assert!(msg.contains("500"), "{msg}");
         assert!(msg.contains("boom"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn send_errors_do_not_repeat_url_from_reqwest_error() {
+        let url = closing_local_url("/token-in-url");
+        let sink = ApiSink::new(
+            "api-sink",
+            url.clone(),
+            Method::POST,
+            HeaderMap::new(),
+            BodyFormat::Payload,
+            Some(Duration::from_millis(500)),
+        )
+        .unwrap();
+
+        let err = sink
+            .write(&Envelope::new("src", json!({})))
+            .await
+            .expect_err("expected connection failure");
+        let msg = format!("{err:#}");
+        assert_eq!(msg.matches(&url).count(), 1, "{msg}");
     }
 
     // -----------------------------------------------------------------

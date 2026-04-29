@@ -54,7 +54,7 @@ The `type` field is matched against the registered `kind` in the [component regi
 
 ## Multiple files (directory mode)
 
-When `COURIER_CONFIG` points at a directory, Courier reads every `.toml`/`.json` file in sorted order and concatenates their `pipelines` lists. This makes it straightforward to keep one pipeline per file:
+When `COURIER_CONFIG` points at a directory, Courier reads every `.toml`/`.json` file in sorted order, interpolates each file independently, and concatenates their `pipelines` lists. This makes it straightforward to keep one pipeline per file:
 
 ```text
 pipelines.d/

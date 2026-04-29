@@ -8,7 +8,7 @@ use sqlx::postgres::PgPoolOptions;
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{PgPool, SqlitePool};
 
-use crate::config::parse_config;
+use crate::config::{parse_config, redact_secret};
 use crate::envelope::Envelope;
 use crate::pipeline::ErrorPolicy;
 use crate::retry::RetryPolicy;
@@ -180,7 +180,8 @@ fn validate_identifier(identifier: &str, label: &str) -> Result<()> {
         .any(|part| part.is_empty() || !part.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
     {
         return Err(anyhow!(
-            "invalid config for component type 'sql': invalid {label} identifier '{identifier}'"
+            "invalid config for component type 'sql': invalid {label} identifier '{}'",
+            redact_secret(identifier)
         ));
     }
     Ok(())

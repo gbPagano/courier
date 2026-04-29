@@ -7,6 +7,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
+use crate::config::redact_secret;
 use crate::envelope::Envelope;
 use crate::observability::NodeCtx;
 use crate::observability::trace_context;
@@ -41,8 +42,8 @@ impl SourceCtx {
     ) -> Result<(), SendStopped> {
         let span = tracing::info_span!(
             "courier.source",
-            pipeline = %self.node_ctx.pipeline(),
-            node_id = %self.node_ctx.node_id(),
+            pipeline = %redact_secret(self.node_ctx.pipeline()),
+            node_id = %redact_secret(self.node_ctx.node_id()),
             node_kind = "source",
             envelope.source_id = %env.meta.source_id,
             envelope.key = if self.node_ctx.log_keys() { env.meta.key.as_deref().unwrap_or("") } else { "" },

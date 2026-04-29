@@ -8,7 +8,7 @@ use rdkafka::producer::{FutureProducer, FutureRecord};
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::config::parse_config;
+use crate::config::{parse_config, redact_secret};
 use crate::envelope::Envelope;
 use crate::observability::trace_context::{TRACEPARENT, TRACESTATE};
 use crate::pipeline::ErrorPolicy;
@@ -73,8 +73,8 @@ impl WriteOne for KafkaSink {
             Ok(status) => {
                 log::debug!(
                     "[{}] delivered to topic={} partition={} offset={}",
-                    self.id,
-                    self.topic,
+                    redact_secret(&self.id),
+                    redact_secret(&self.topic),
                     status.partition,
                     status.offset,
                 );

@@ -21,7 +21,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
 use crate::Courier;
-use crate::config::{Config, PipelineSpec, SinkSpec, SourceSpec, TransformSpec};
+use crate::config::{Config, PipelineSpec, SinkSpec, SourceSpec, TransformSpec, redact_secret};
 use crate::observability::init_metrics;
 use crate::pipeline::{ErrorPolicy, Pipeline};
 use crate::retry::RetryPolicy;
@@ -162,10 +162,10 @@ impl Registry {
         let factory = self
             .source_factories
             .get(&kind)
-            .with_context(|| format!("unknown source type '{kind}'"))?;
+            .with_context(|| format!("unknown source type '{}'", redact_secret(&kind)))?;
         factory
             .build(id, spec.config, retry)
-            .with_context(|| format!("failed to build source '{kind}'"))
+            .with_context(|| format!("failed to build source '{}'", redact_secret(&kind)))
     }
 
     pub fn build_transform(&self, id: &str, spec: TransformSpec) -> Result<Box<dyn Transform>> {
@@ -174,10 +174,10 @@ impl Registry {
         let factory = self
             .transform_factories
             .get(&kind)
-            .with_context(|| format!("unknown transform type '{kind}'"))?;
+            .with_context(|| format!("unknown transform type '{}'", redact_secret(&kind)))?;
         factory
             .build(id, spec.config, on_error)
-            .with_context(|| format!("failed to build transform '{kind}'"))
+            .with_context(|| format!("failed to build transform '{}'", redact_secret(&kind)))
     }
 
     pub fn build_sink(&self, id: &str, spec: SinkSpec) -> Result<Box<dyn Sink>> {
@@ -187,10 +187,10 @@ impl Registry {
         let factory = self
             .sink_factories
             .get(&kind)
-            .with_context(|| format!("unknown sink type '{kind}'"))?;
+            .with_context(|| format!("unknown sink type '{}'", redact_secret(&kind)))?;
         factory
             .build(id, spec.config, on_error, retry)
-            .with_context(|| format!("failed to build sink '{kind}'"))
+            .with_context(|| format!("failed to build sink '{}'", redact_secret(&kind)))
     }
 
     /// Builds a whole `Courier` from a `Config`. Mints hierarchical node
@@ -206,7 +206,7 @@ impl Registry {
             let name = spec.name.clone();
             let mut pipeline = self
                 .build_pipeline(spec)
-                .with_context(|| format!("failed to build pipeline '{name}'"))?;
+                .with_context(|| format!("failed to build pipeline '{}'", redact_secret(&name)))?;
             pipeline = pipeline.with_observability(Some(metrics.clone()));
             pipelines.push(pipeline);
         }
@@ -224,7 +224,7 @@ impl Registry {
         for spec in config.pipelines {
             let name = spec.name.clone();
             self.build_pipeline(spec)
-                .with_context(|| format!("failed to build pipeline '{name}'"))?;
+                .with_context(|| format!("failed to build pipeline '{}'", redact_secret(&name)))?;
         }
         Ok(())
     }
@@ -233,7 +233,7 @@ impl Registry {
         let name = spec.name;
         let source = self
             .build_source(&format!("{name}/src"), spec.source)
-            .with_context(|| format!("pipeline '{name}' source"))?;
+            .with_context(|| format!("pipeline '{}' source", redact_secret(&name)))?;
 
         let mut pipeline = Pipeline::new(&name, source);
         if let Some(capacity) = spec.channel_capacity {
@@ -242,17 +242,17 @@ impl Registry {
 
         for (i, transform) in spec.transforms.into_iter().enumerate() {
             let id = format!("{name}/t{i}");
-            pipeline = pipeline.with_transform(
-                self.build_transform(&id, transform)
-                    .with_context(|| format!("pipeline '{name}' transform[{i}]"))?,
-            );
+            pipeline =
+                pipeline.with_transform(self.build_transform(&id, transform).with_context(
+                    || format!("pipeline '{}' transform[{i}]", redact_secret(&name)),
+                )?);
         }
 
         for (i, sink) in spec.sinks.into_iter().enumerate() {
             let id = format!("{name}/sink{i}");
             pipeline = pipeline.with_sink(
                 self.build_sink(&id, sink)
-                    .with_context(|| format!("pipeline '{name}' sink[{i}]"))?,
+                    .with_context(|| format!("pipeline '{}' sink[{i}]", redact_secret(&name)))?,
             );
         }
 

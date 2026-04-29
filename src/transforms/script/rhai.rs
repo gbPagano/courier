@@ -2,6 +2,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use rhai::serde::{from_dynamic, to_dynamic};
 use rhai::{AST, Dynamic, Engine, Scope};
 
+use crate::config::redact_secret;
 use crate::envelope::Envelope;
 
 use super::{ScriptEngine, ScriptTransformConfig};
@@ -43,7 +44,7 @@ impl RhaiEngine {
         if !has_entrypoint {
             bail!(
                 "missing Rhai entrypoint '{}' with exactly one parameter",
-                config.entrypoint
+                redact_secret(&config.entrypoint)
             );
         }
 
@@ -60,7 +61,12 @@ impl RhaiEngine {
         let out: Dynamic = self
             .engine
             .call_fn(&mut scope, &self.ast, &self.entrypoint, (arg,))
-            .with_context(|| format!("Rhai entrypoint '{}' failed", self.entrypoint))?;
+            .with_context(|| {
+                format!(
+                    "Rhai entrypoint '{}' failed",
+                    redact_secret(&self.entrypoint)
+                )
+            })?;
 
         if out.is_unit() {
             return Ok(None);

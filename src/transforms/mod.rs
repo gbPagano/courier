@@ -7,6 +7,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
+use crate::config::redact_secret;
 use crate::envelope::Envelope;
 use crate::observability::NodeCtx;
 use crate::observability::trace_context;
@@ -97,8 +98,8 @@ impl<M: MapOne + 'static> Transform for BasicTransform<M> {
                     let Some(env) = maybe else { break };
                     let span = tracing::info_span!(
                         "courier.transform",
-                        pipeline = %ctx.pipeline(),
-                        node_id = %ctx.node_id(),
+                        pipeline = %redact_secret(ctx.pipeline()),
+                        node_id = %redact_secret(ctx.node_id()),
                         node_kind = %ctx.node_kind_str(),
                         envelope.source_id = %env.meta.source_id,
                         envelope.key = if ctx.log_keys() { env.meta.key.as_deref().unwrap_or("") } else { "" },
@@ -115,7 +116,7 @@ impl<M: MapOne + 'static> Transform for BasicTransform<M> {
                             ctx.record_processed();
                             trace_context::inject(&mut out.meta.headers, &span_context);
                             if tx.send(out).await.is_err() {
-                                tracing::debug!(node_id = %id, "downstream closed");
+                                tracing::debug!(node_id = %redact_secret(&id), "downstream closed");
                                 return;
                             }
                         }
@@ -126,10 +127,10 @@ impl<M: MapOne + 'static> Transform for BasicTransform<M> {
                             ctx.record_failed();
                             match &self.on_error {
                                 ErrorPolicy::Drop => {
-                                    tracing::error!(node_id = %id, error = %e, "map failed, dropping");
+                                    tracing::error!(node_id = %redact_secret(&id), error = %e, "map failed, dropping");
                                 }
                                 ErrorPolicy::FailPipeline => {
-                                    tracing::error!(node_id = %id, error = %e, "map failed, failing pipeline");
+                                    tracing::error!(node_id = %redact_secret(&id), error = %e, "map failed, failing pipeline");
                                     cancel.cancel();
                                     break;
                                 }

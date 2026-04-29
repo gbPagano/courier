@@ -8,7 +8,7 @@ use tokio::fs::File;
 use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::sync::Mutex;
 
-use crate::config::parse_config;
+use crate::config::{parse_config, redact_secret_path};
 use crate::envelope::Envelope;
 use crate::pipeline::ErrorPolicy;
 use crate::retry::RetryPolicy;
@@ -85,7 +85,7 @@ impl FileSink {
             std::fs::create_dir_all(parent).map_err(|e| {
                 anyhow!(
                     "failed to create parent dir for {}: {e}",
-                    self.path.display()
+                    redact_secret_path(&self.path)
                 )
             })?;
         }
@@ -100,7 +100,7 @@ impl FileSink {
             .create(true)
             .append(true)
             .open(&self.path)
-            .map_err(|e| anyhow!("failed to open {}: {e}", self.path.display()))?;
+            .map_err(|e| anyhow!("failed to open {}: {e}", redact_secret_path(&self.path)))?;
         state.writer = Some(BufWriter::new(File::from_std(std_file)));
         Ok(())
     }
@@ -142,14 +142,18 @@ impl WriteOne for FileSink {
                     .expect("writer is opened above")
                     .write_all(buf.as_bytes())
                     .await
-                    .map_err(|e| anyhow!("write to {} failed: {e}", self.path.display()))?;
+                    .map_err(|e| {
+                        anyhow!("write to {} failed: {e}", redact_secret_path(&self.path))
+                    })?;
                 state
                     .writer
                     .as_mut()
                     .expect("writer is opened above")
                     .flush()
                     .await
-                    .map_err(|e| anyhow!("flush of {} failed: {e}", self.path.display()))?;
+                    .map_err(|e| {
+                        anyhow!("flush of {} failed: {e}", redact_secret_path(&self.path))
+                    })?;
                 return Ok(());
             }
         }
@@ -162,14 +166,14 @@ impl WriteOne for FileSink {
             .expect("writer is opened above")
             .write_all(buf.as_bytes())
             .await
-            .map_err(|e| anyhow!("write to {} failed: {e}", self.path.display()))?;
+            .map_err(|e| anyhow!("write to {} failed: {e}", redact_secret_path(&self.path)))?;
         state
             .writer
             .as_mut()
             .expect("writer is opened above")
             .flush()
             .await
-            .map_err(|e| anyhow!("flush of {} failed: {e}", self.path.display()))?;
+            .map_err(|e| anyhow!("flush of {} failed: {e}", redact_secret_path(&self.path)))?;
         Ok(())
     }
 }

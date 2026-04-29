@@ -13,7 +13,7 @@ use tokio::net::TcpListener;
 use tokio::sync::mpsc::Sender;
 use tokio_util::sync::CancellationToken;
 
-use crate::config::parse_config;
+use crate::config::{parse_config, redact_secret};
 use crate::envelope::Envelope;
 use crate::observability::trace_context::{TRACEPARENT, TRACESTATE};
 use crate::observability::{NodeCtx, SourceCtx};
@@ -68,7 +68,11 @@ impl Source for HttpWebhookSource {
         let listener = match TcpListener::bind(self.bind).await {
             Ok(listener) => listener,
             Err(e) => {
-                log::error!("[{}] failed to bind {}: {e}", self.id, self.bind);
+                log::error!(
+                    "[{}] failed to bind {}: {e}",
+                    redact_secret(&self.id),
+                    redact_secret(&self.bind.to_string())
+                );
                 return;
             }
         };
@@ -76,8 +80,8 @@ impl Source for HttpWebhookSource {
         let local_addr = listener.local_addr().unwrap_or(self.bind);
         log::info!(
             "[{}] listening for POST {} on {}",
-            self.id,
-            self.path,
+            redact_secret(&self.id),
+            redact_secret(&self.path),
             local_addr
         );
 
@@ -85,7 +89,7 @@ impl Source for HttpWebhookSource {
             .with_graceful_shutdown(cancel.cancelled_owned())
             .await
         {
-            log::error!("[{}] webhook server failed: {e}", self.id);
+            log::error!("[{}] webhook server failed: {e}", redact_secret(&self.id));
         }
     }
 }
@@ -174,14 +178,16 @@ pub fn http_webhook_source_factory(
         );
     }
     let config: HttpWebhookSourceConfig = parse_config("http_webhook", config)?;
-    let bind = config
-        .bind
-        .parse::<SocketAddr>()
-        .map_err(|e| anyhow::anyhow!("invalid http_webhook bind '{}': {e}", config.bind))?;
+    let bind = config.bind.parse::<SocketAddr>().map_err(|e| {
+        anyhow::anyhow!(
+            "invalid http_webhook bind '{}': {e}",
+            redact_secret(&config.bind)
+        )
+    })?;
     if !config.path.starts_with('/') {
         bail!(
             "invalid http_webhook path '{}': path must start with '/'",
-            config.path
+            redact_secret(&config.path)
         );
     }
 

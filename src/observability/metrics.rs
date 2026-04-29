@@ -23,7 +23,7 @@ use opentelemetry_otlp::{MetricExporter, WithExportConfig};
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
 
-use crate::config::ObservabilityConfig;
+use crate::config::{ObservabilityConfig, redact_secret};
 
 /// Coarse-grained classification of a runtime node, used as a metric
 /// attribute so dashboards can slice "all sinks" or "all transforms"
@@ -326,7 +326,12 @@ pub fn init_metrics(config: Option<&ObservabilityConfig>) -> Result<ObsHandle> {
         .with_tonic()
         .with_endpoint(endpoint)
         .build()
-        .with_context(|| format!("failed to build OTLP metric exporter for {endpoint}"))?;
+        .with_context(|| {
+            format!(
+                "failed to build OTLP metric exporter for {}",
+                redact_secret(endpoint)
+            )
+        })?;
 
     let reader = PeriodicReader::builder(exporter)
         .with_interval(Duration::from_millis(obs.metrics.export_interval_ms))

@@ -6,6 +6,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::config::redact_secret;
 use crate::envelope::Envelope;
 
 use super::{ScriptEngine, ScriptTransformConfig};
@@ -97,7 +98,12 @@ impl PythonEngine {
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()
-            .with_context(|| format!("failed to spawn Python interpreter '{}'", python.bin))?;
+            .with_context(|| {
+                format!(
+                    "failed to spawn Python interpreter '{}'",
+                    redact_secret(&python.bin)
+                )
+            })?;
 
         let stdin = child
             .stdin

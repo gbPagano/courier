@@ -12,7 +12,7 @@ use tokio::sync::mpsc::Sender;
 use tokio::time::{MissedTickBehavior, interval};
 use tokio_util::sync::CancellationToken;
 
-use crate::config::parse_config;
+use crate::config::{parse_config, redact_secret};
 use crate::envelope::Envelope;
 use crate::observability::{NodeCtx, SendStopped, SourceCtx};
 use crate::retry::RetryPolicy;
@@ -83,14 +83,17 @@ impl Source for SqlQueryPollSource {
         let db = match SourceDb::connect(self.driver, &self.dsn).await {
             Ok(db) => db,
             Err(e) => {
-                log::error!("[{}] failed to connect SQL source: {e}", self.id);
+                log::error!(
+                    "[{}] failed to connect SQL source: {e}",
+                    redact_secret(&self.id)
+                );
                 return;
             }
         };
 
         log::info!(
             "[{}] starting SQL poll loop every {:?}",
-            self.id,
+            redact_secret(&self.id),
             self.poll_interval
         );
 
@@ -104,7 +107,7 @@ impl Source for SqlQueryPollSource {
                         let delay = scheduler.record_failure();
                         log::error!(
                             "[{}] SQL query failed (consecutive failures: {}), next attempt in {:?}: {e}",
-                            self.id,
+                            redact_secret(&self.id),
                             scheduler.consecutive_failures(),
                             delay,
                         );
@@ -129,7 +132,7 @@ impl Source for SqlQueryPollSource {
                     Ok(()) => {}
                     Err(SendStopped::Cancelled) => return,
                     Err(SendStopped::DownstreamClosed) => {
-                        log::info!("[{}] downstream closed, stopping", self.id);
+                        log::info!("[{}] downstream closed, stopping", redact_secret(&self.id));
                         return;
                     }
                 }
@@ -139,7 +142,7 @@ impl Source for SqlQueryPollSource {
             if elapsed > self.poll_interval {
                 log::warn!(
                     "[{}] SQL poll took {:?}, exceeding interval {:?}",
-                    self.id,
+                    redact_secret(&self.id),
                     elapsed,
                     self.poll_interval,
                 );

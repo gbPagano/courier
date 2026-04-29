@@ -1,6 +1,7 @@
 use anyhow::Result;
 use tokio::io::AsyncWriteExt;
 
+use crate::config::{redact_secret, redact_secret_path};
 use crate::envelope::Envelope;
 use crate::observability::NodeCtx;
 use crate::retry::{ExhaustedPolicy, RetryPolicy};
@@ -35,7 +36,7 @@ pub(crate) async fn write_with_retry<W: WriteOne>(
                 let delay = policy.delay_for(attempt);
                 ctx.record_retry();
                 tracing::warn!(
-                    node_id = %inner.id(),
+                    node_id = %redact_secret(inner.id()),
                     attempt = attempt + 1,
                     max_attempts = policy.max_attempts,
                     delay_ms = delay.as_millis() as u64,
@@ -85,16 +86,16 @@ async fn on_exhausted(
                 Ok(()) => {
                     ctx.record_dead_letter();
                     tracing::warn!(
-                        node_id = %id,
-                        path = %path.display(),
+                        node_id = %redact_secret(id),
+                        path = %redact_secret_path(path),
                         "all retries exhausted, envelope dead-lettered"
                     );
                     Ok(WriteOutcome::DeadLettered)
                 }
                 Err(io_err) => {
                     tracing::error!(
-                        node_id = %id,
-                        path = %path.display(),
+                        node_id = %redact_secret(id),
+                        path = %redact_secret_path(path),
                         error = %io_err,
                         "failed to persist dead-letter entry"
                     );

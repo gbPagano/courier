@@ -4,6 +4,7 @@ use tokio::sync::mpsc::{self, WeakSender};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use crate::config::redact_secret;
 use crate::envelope::Envelope;
 use crate::observability::{NodeCtx, NodeKind, ObsHandle};
 use crate::sinks::Sink;
@@ -101,7 +102,7 @@ pub(crate) fn spawn_pipeline(p: Pipeline, cancel: CancellationToken) -> Vec<Join
         obs,
     } = p;
 
-    tracing::info!(pipeline = %id, "spawning pipeline");
+    tracing::info!(pipeline = %redact_secret(&id), "spawning pipeline");
     let mut handles = Vec::new();
 
     let (src_tx, mut prev_rx) = mpsc::channel::<Envelope>(cap);
@@ -172,7 +173,7 @@ pub(crate) fn spawn_pipeline(p: Pipeline, cancel: CancellationToken) -> Vec<Join
     match sinks.len() {
         0 => {
             tracing::warn!(
-                pipeline = %id,
+                pipeline = %redact_secret(&id),
                 "pipeline has no sinks; envelopes will be discarded"
             );
             let c = cancel.clone();
@@ -240,7 +241,7 @@ pub(crate) fn spawn_pipeline(p: Pipeline, cancel: CancellationToken) -> Vec<Join
                             let Some(env) = maybe else { break };
                             for tx in &sink_txs {
                                 if tx.send(env.clone()).await.is_err() {
-                                    tracing::debug!(node_id = %splitter_log_id, "downstream sink closed");
+                                    tracing::debug!(node_id = %redact_secret(&splitter_log_id), "downstream sink closed");
                                 }
                             }
                         }

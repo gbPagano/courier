@@ -8,6 +8,7 @@ use tracing::Instrument;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use self::retry::WriteOutcome;
+use crate::config::redact_secret;
 use crate::envelope::Envelope;
 use crate::observability::NodeCtx;
 use crate::observability::trace_context;
@@ -99,18 +100,18 @@ impl<W: WriteOne + 'static> Sink for ManagedSink<W> {
         loop {
             tokio::select! {
                 _ = cancel.cancelled() => {
-                    tracing::debug!(node_id = %id, reason = "cancel", "sink drained on cancellation");
+                    tracing::debug!(node_id = %redact_secret(&id), reason = "cancel", "sink drained on cancellation");
                     break;
                 }
                 maybe = rx.recv() => {
                     let Some(mut env) = maybe else {
-                        tracing::debug!(node_id = %id, reason = "upstream_closed", "sink loop ending");
+                        tracing::debug!(node_id = %redact_secret(&id), reason = "upstream_closed", "sink loop ending");
                         break;
                     };
                     let span = tracing::info_span!(
                         "courier.sink",
-                        pipeline = %ctx.pipeline(),
-                        node_id = %ctx.node_id(),
+                        pipeline = %redact_secret(ctx.pipeline()),
+                        node_id = %redact_secret(ctx.node_id()),
                         node_kind = %ctx.node_kind_str(),
                         envelope.source_id = %env.meta.source_id,
                         envelope.key = if ctx.log_keys() { env.meta.key.as_deref().unwrap_or("") } else { "" },
@@ -144,10 +145,10 @@ impl<W: WriteOne + 'static> Sink for ManagedSink<W> {
                             ctx.record_failed();
                             match &self.on_error {
                                 ErrorPolicy::Drop => {
-                                    tracing::error!(node_id = %id, error = %e, "write failed, dropping");
+                                    tracing::error!(node_id = %redact_secret(&id), error = %e, "write failed, dropping");
                                 }
                                 ErrorPolicy::FailPipeline => {
-                                    tracing::error!(node_id = %id, error = %e, "write failed, failing pipeline");
+                                    tracing::error!(node_id = %redact_secret(&id), error = %e, "write failed, failing pipeline");
                                     cancel.cancel();
                                     break;
                                 }

@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, anyhow, bail};
 use mlua::{Function, Lua, LuaSerdeExt, MultiValue, Value};
 
+use crate::config::redact_secret;
 use crate::envelope::Envelope;
 
 use super::{ScriptEngine, ScriptTransformConfig};
@@ -24,9 +25,12 @@ impl LuaEngine {
             .context("failed to compile Lua script")?;
 
         let globals = lua.globals();
-        let _: Function = globals
-            .get(config.entrypoint.as_str())
-            .with_context(|| format!("missing Lua entrypoint '{}'", config.entrypoint))?;
+        let _: Function = globals.get(config.entrypoint.as_str()).with_context(|| {
+            format!(
+                "missing Lua entrypoint '{}'",
+                redact_secret(&config.entrypoint)
+            )
+        })?;
 
         Ok(Self {
             lua,
@@ -41,16 +45,22 @@ impl LuaEngine {
 
     fn run_inner(&self, env: Envelope) -> Result<Option<Envelope>> {
         let globals = self.lua.globals();
-        let entrypoint: Function = globals
-            .get(self.entrypoint.as_str())
-            .with_context(|| format!("missing Lua entrypoint '{}'", self.entrypoint))?;
+        let entrypoint: Function = globals.get(self.entrypoint.as_str()).with_context(|| {
+            format!(
+                "missing Lua entrypoint '{}'",
+                redact_secret(&self.entrypoint)
+            )
+        })?;
         let arg = self
             .lua
             .to_value(&env)
             .context("failed to convert envelope into Lua value")?;
-        let out: MultiValue = entrypoint
-            .call((arg,))
-            .with_context(|| format!("Lua entrypoint '{}' failed", self.entrypoint))?;
+        let out: MultiValue = entrypoint.call((arg,)).with_context(|| {
+            format!(
+                "Lua entrypoint '{}' failed",
+                redact_secret(&self.entrypoint)
+            )
+        })?;
 
         let mut values = out.into_vec();
         let value = match values.len() {
@@ -58,7 +68,7 @@ impl LuaEngine {
             1 => values.pop().expect("single return value expected"),
             _ => bail!(
                 "Lua entrypoint '{}' returned multiple values",
-                self.entrypoint
+                redact_secret(&self.entrypoint)
             ),
         };
 

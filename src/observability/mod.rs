@@ -25,7 +25,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer, fmt, registry};
 
-use crate::config::{LogFormat, ObservabilityConfig};
+use crate::config::{LogFormat, ObservabilityConfig, redact_secret};
 
 pub mod metrics;
 pub mod source_ctx;
@@ -188,7 +188,12 @@ fn init_traces(config: Option<&ObservabilityConfig>) -> Result<Option<SdkTracerP
         .with_tonic()
         .with_endpoint(endpoint)
         .build()
-        .with_context(|| format!("failed to build OTLP span exporter for {endpoint}"))?;
+        .with_context(|| {
+            format!(
+                "failed to build OTLP span exporter for {}",
+                redact_secret(endpoint)
+            )
+        })?;
 
     let sampler = Sampler::ParentBased(Box::new(Sampler::TraceIdRatioBased(
         obs.tracing.sample_ratio,
@@ -216,7 +221,12 @@ fn init_logs(config: Option<&ObservabilityConfig>) -> Result<Option<SdkLoggerPro
         .with_tonic()
         .with_endpoint(endpoint)
         .build()
-        .with_context(|| format!("failed to build OTLP log exporter for {endpoint}"))?;
+        .with_context(|| {
+            format!(
+                "failed to build OTLP log exporter for {}",
+                redact_secret(endpoint)
+            )
+        })?;
 
     let resource = Resource::builder()
         .with_service_name(obs.service_name.clone())
