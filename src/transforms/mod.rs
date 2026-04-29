@@ -13,6 +13,9 @@ use crate::observability::NodeCtx;
 use crate::observability::trace_context;
 use crate::pipeline::ErrorPolicy;
 
+pub mod batch;
+pub mod filter;
+pub mod mutate;
 pub mod script;
 pub mod set_key;
 

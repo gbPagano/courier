@@ -292,6 +292,15 @@ pub fn register_builtin(registry: &mut Registry) -> Result<()> {
         "sql_query_poll",
         crate::sources::sql::sql_query_poll_source_factory,
     )?;
+    registry.register_transform("batch", crate::transforms::batch::batch_transform_factory)?;
+    registry.register_transform(
+        "filter",
+        crate::transforms::filter::filter_transform_factory,
+    )?;
+    registry.register_transform(
+        "mutate",
+        crate::transforms::mutate::mutate_transform_factory,
+    )?;
     registry.register_transform(
         "script",
         crate::transforms::script::script_transform_factory,
@@ -535,7 +544,10 @@ mod tests {
 
         let mut transforms: Vec<_> = registry.transform_kinds().collect();
         transforms.sort();
-        assert_eq!(transforms, vec!["script", "set_key"]);
+        assert_eq!(
+            transforms,
+            vec!["batch", "filter", "mutate", "script", "set_key"]
+        );
 
         let mut sinks: Vec<_> = registry.sink_kinds().collect();
         sinks.sort();

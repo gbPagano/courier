@@ -1183,3 +1183,200 @@ async fn lua_script_transform_fail_pipeline_stops_after_error() {
 
     assert!(capture.handle().lock().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn filter_transform_end_to_end() {
+    let mut registry = Registry::default();
+    register_builtin(&mut registry).unwrap();
+
+    let capture = CollectingSink::new("dst");
+    let store = capture.handle();
+    registry
+        .register_source("vec", |id: &str, _, _| {
+            Ok(Box::new(VecSource::new(
+                id,
+                vec![
+                    Envelope::new(id, json!({ "status": "ok" })),
+                    Envelope::new(id, json!({ "status": "error" })),
+                ],
+            )) as Box<dyn Source>)
+        })
+        .unwrap();
+    registry
+        .register_sink("capture", move |id: &str, _, _, _| {
+            Ok(Box::new(ManagedSink::new(CollectingSink::from_store(
+                id,
+                store.clone(),
+            ))) as Box<dyn courier::sinks::Sink>)
+        })
+        .unwrap();
+
+    let courier = registry
+        .build_courier(Config {
+            observability: None,
+            pipelines: vec![PipelineSpec {
+                name: "filtered".into(),
+                source: SourceSpec {
+                    kind: "vec".into(),
+                    config: json!({}),
+                    retry: None,
+                },
+                transforms: vec![TransformSpec {
+                    kind: "filter".into(),
+                    config: json!({
+                        "predicate": "payload.status == \"ok\""
+                    }),
+                    on_error: Some(ErrorPolicyConfig::Drop),
+                }],
+                sinks: vec![SinkSpec {
+                    kind: "capture".into(),
+                    config: json!({}),
+                    on_error: None,
+                    retry: None,
+                }],
+                channel_capacity: None,
+            }],
+        })
+        .unwrap();
+
+    let handles = courier.spawn(CancellationToken::new());
+    join_all(handles).await;
+
+    let items = capture.handle();
+    let items = items.lock().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].payload, json!({ "status": "ok" }));
+}
+
+#[tokio::test]
+async fn mutate_transform_end_to_end() {
+    let mut registry = Registry::default();
+    register_builtin(&mut registry).unwrap();
+
+    let capture = CollectingSink::new("dst");
+    let store = capture.handle();
+    registry
+        .register_source("vec", |id: &str, _, _| {
+            Ok(Box::new(VecSource::new(
+                id,
+                vec![Envelope::new(id, json!({ "old_field": 1, "keep": 2 }))],
+            )) as Box<dyn Source>)
+        })
+        .unwrap();
+    registry
+        .register_sink("capture", move |id: &str, _, _, _| {
+            Ok(Box::new(ManagedSink::new(CollectingSink::from_store(
+                id,
+                store.clone(),
+            ))) as Box<dyn courier::sinks::Sink>)
+        })
+        .unwrap();
+
+    let courier = registry
+        .build_courier(Config {
+            observability: None,
+            pipelines: vec![PipelineSpec {
+                name: "mutated".into(),
+                source: SourceSpec {
+                    kind: "vec".into(),
+                    config: json!({}),
+                    retry: None,
+                },
+                transforms: vec![TransformSpec {
+                    kind: "mutate".into(),
+                    config: json!({
+                        "operations": [
+                            { "type": "remove_field", "path": "old_field" },
+                            { "type": "add_field", "path": "new_field", "value": "hello" },
+                            { "type": "cast", "path": "keep", "to": "string" }
+                        ]
+                    }),
+                    on_error: Some(ErrorPolicyConfig::Drop),
+                }],
+                sinks: vec![SinkSpec {
+                    kind: "capture".into(),
+                    config: json!({}),
+                    on_error: None,
+                    retry: None,
+                }],
+                channel_capacity: None,
+            }],
+        })
+        .unwrap();
+
+    let handles = courier.spawn(CancellationToken::new());
+    join_all(handles).await;
+
+    let items = capture.handle();
+    let items = items.lock().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(
+        items[0].payload,
+        json!({ "keep": "2", "new_field": "hello" })
+    );
+}
+
+#[tokio::test]
+async fn batch_transform_end_to_end() {
+    let mut registry = Registry::default();
+    register_builtin(&mut registry).unwrap();
+
+    let capture = CollectingSink::new("dst");
+    let store = capture.handle();
+    registry
+        .register_source("vec", |id: &str, _, _| {
+            Ok(Box::new(VecSource::new(
+                id,
+                vec![
+                    Envelope::new(id, json!({ "i": 1 })),
+                    Envelope::new(id, json!({ "i": 2 })),
+                    Envelope::new(id, json!({ "i": 3 })),
+                ],
+            )) as Box<dyn Source>)
+        })
+        .unwrap();
+    registry
+        .register_sink("capture", move |id: &str, _, _, _| {
+            Ok(Box::new(ManagedSink::new(CollectingSink::from_store(
+                id,
+                store.clone(),
+            ))) as Box<dyn courier::sinks::Sink>)
+        })
+        .unwrap();
+
+    let courier = registry
+        .build_courier(Config {
+            observability: None,
+            pipelines: vec![PipelineSpec {
+                name: "batched".into(),
+                source: SourceSpec {
+                    kind: "vec".into(),
+                    config: json!({}),
+                    retry: None,
+                },
+                transforms: vec![TransformSpec {
+                    kind: "batch".into(),
+                    config: json!({ "max_size": 2 }),
+                    on_error: Some(ErrorPolicyConfig::Drop),
+                }],
+                sinks: vec![SinkSpec {
+                    kind: "capture".into(),
+                    config: json!({}),
+                    on_error: None,
+                    retry: None,
+                }],
+                channel_capacity: None,
+            }],
+        })
+        .unwrap();
+
+    let handles = courier.spawn(CancellationToken::new());
+    join_all(handles).await;
+
+    let items = capture.handle();
+    let items = items.lock().unwrap();
+    // 3 items with max_size=2 -> two batches: [1,2] and [3]
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0].payload["items"].as_array().unwrap().len(), 2);
+    assert_eq!(items[1].payload["items"].as_array().unwrap().len(), 1);
+}
