@@ -10,9 +10,17 @@ icon: lucide/download
 - A C toolchain (Courier links against `rdkafka` for the Kafka source/sink).
 - Optional, for the [Python script transform](../scripting/python.md): a `python3` interpreter reachable on `PATH` or via the `python_bin` config field.
 
-## Build from source
+## Install from crates.io
 
-Courier currently ships as a binary built from source.
+Install the current beta release with Cargo:
+
+```bash
+cargo install data-courier --version 0.1.0-beta.1
+```
+
+This installs the `courier` binary.
+
+## Build from source
 
 ```bash
 git clone https://github.com/gbPagano/courier
@@ -37,7 +45,7 @@ cargo clippy --all-targets
 By default, Courier reads `config.toml` from the working directory. Override the path with the `COURIER_CONFIG` environment variable — it can point at a single `.toml`/`.json` file or at a directory containing several:
 
 ```bash
-COURIER_CONFIG=./pipelines.d cargo run -- run
+COURIER_CONFIG=./pipelines.d courier run
 ```
 
 In directory mode, every `.toml`/`.json` file in the directory is parsed in sorted order and the resulting `pipelines` lists are concatenated.

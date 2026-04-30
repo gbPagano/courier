@@ -12,7 +12,7 @@ Start the stack, then run Courier with the sample config:
 
 ```bash
 docker compose -f examples/docker-compose.observability.yml up -d
-COURIER_CONFIG=examples/config.toml cargo run -- run
+COURIER_CONFIG=examples/config.toml courier run
 ```
 
 The sample configuration exports all three signal types to `localhost:4317`:

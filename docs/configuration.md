@@ -95,13 +95,6 @@ courier run
 courier run --config config.toml
 ```
 
-During local development with Cargo, pass arguments after `--`:
-
-```bash
-cargo run -- validate --config config.toml
-cargo run -- list-components
-cargo run -- run --config config.toml
-```
 
 ## In this section
 

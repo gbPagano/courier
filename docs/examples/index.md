@@ -7,7 +7,7 @@ Use these examples as starting points for real `config.toml` files. They are gro
 Copy a recipe into `config.toml`, adjust endpoints or credentials, then run:
 
 ```bash
-cargo run -- run --config config.toml
+courier run --config config.toml
 ```
 
 Kafka examples assume a broker at `localhost:9092` and an existing target topic.

@@ -198,7 +198,7 @@ otlp_endpoint = "http://localhost:4317"
 
 ```bash
 docker compose -f examples/docker-compose.observability.yml up -d
-COURIER_CONFIG=examples/config.toml cargo run -- run
+COURIER_CONFIG=examples/config.toml courier run
 ```
 
 ### Viewing logs in Grafana
