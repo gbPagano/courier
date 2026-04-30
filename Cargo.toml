@@ -1,7 +1,22 @@
 [package]
-name = "courier"
-version = "0.1.0"
+name = "data-courier"
+version = "0.1.0-beta.1"
 edition = "2024"
+authors = ["gbPagano <guilhermebpagano@gmail.com>"]
+license = "MIT OR Apache-2.0"
+description = "Async Rust framework for composable data pipelines"
+documentation = "https://gbpagano.github.io/courier/"
+readme = "README.md"
+homepage = "https://gbpagano.github.io/courier/"
+repository = "https://github.com/gbPagano/courier"
+
+[lib]
+name = "courier"
+path = "src/lib.rs"
+
+[[bin]]
+name = "courier"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.100"
