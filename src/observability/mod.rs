@@ -20,7 +20,6 @@ use opentelemetry_otlp::{LogExporter, SpanExporter, WithExportConfig};
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::logs::SdkLoggerProvider;
 use opentelemetry_sdk::trace::{Sampler, SdkTracerProvider};
-use tracing_log::LogTracer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer, fmt, registry};
@@ -134,7 +133,6 @@ fn install(
             .expect("configured/default log filter should be valid")
     });
 
-    let _ = LogTracer::init();
     // Match the prior `env_logger` behavior: write to stderr so stdout stays
     // clean for command output (`validate`, `list-components`) and for users
     // piping `courier run` output downstream.
