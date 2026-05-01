@@ -1,6 +1,6 @@
 [package]
 name = "data-courier"
-version = "0.1.0-beta.2"
+version = "0.1.0-beta.3"
 edition = "2024"
 authors = ["gbPagano <guilhermebpagano@gmail.com>"]
 license = "MIT OR Apache-2.0"

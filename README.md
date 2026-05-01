@@ -28,7 +28,7 @@ Jump in:
 ## Install
 
 ```bash
-cargo install data-courier --version 0.1.0-beta.2
+cargo install data-courier --version 0.1.0-beta.3
 ```
 
 This installs the `courier` binary. See the [installation guide](https://gbpagano.github.io/courier/getting-started/installation/) for prerequisites (Rust toolchain, C toolchain for `rdkafka`, optional `python3` for the Python script transform) and build-from-source instructions.
