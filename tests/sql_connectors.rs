@@ -95,6 +95,70 @@ async fn sqlite_source_polls_rows_and_sink_inserts_rows() -> anyhow::Result<()> 
 }
 
 #[tokio::test]
+async fn sqlite_source_keeps_text_columns_as_strings() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let db_path = dir.path().join("courier.db");
+    let dsn = format!("sqlite://{}?mode=rwc", db_path.display());
+
+    let pool = SqlitePool::connect(&dsn).await?;
+    sqlx::query(
+        "CREATE TABLE events (
+            id INTEGER PRIMARY KEY,
+            bool_text TEXT NOT NULL,
+            number_text TEXT NOT NULL,
+            null_text TEXT NOT NULL,
+            object_text TEXT NOT NULL,
+            array_text TEXT NOT NULL,
+            varchar_text VARCHAR(255) NOT NULL,
+            clob_text CLOB NOT NULL
+        )",
+    )
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO events (
+            id,
+            bool_text,
+            number_text,
+            null_text,
+            object_text,
+            array_text,
+            varchar_text,
+            clob_text
+        ) VALUES (1, 'true', '42', 'null', '{\"ok\":true}', '[1,2]', 'false', '{\"nested\":true}')",
+    )
+    .execute(&pool)
+    .await?;
+
+    let source = SqlQueryPollSource::new(
+        "sqlite/src",
+        SqlDriver::Sqlite,
+        &dsn,
+        "SELECT bool_text, number_text, null_text, object_text, array_text, varchar_text, clob_text FROM events",
+        Duration::from_secs(60),
+    );
+    let (tx, mut rx) = mpsc::channel(8);
+    let cancel = CancellationToken::new();
+    let c = cancel.clone();
+    let handle = tokio::spawn(async move { Box::new(source).run(tx, c).await });
+
+    let env = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await?
+        .expect("source closed before emitting");
+    cancel.cancel();
+    let _ = tokio::time::timeout(Duration::from_secs(1), handle).await;
+
+    assert_eq!(env.payload["bool_text"], json!("true"));
+    assert_eq!(env.payload["number_text"], json!("42"));
+    assert_eq!(env.payload["null_text"], json!("null"));
+    assert_eq!(env.payload["object_text"], json!("{\"ok\":true}"));
+    assert_eq!(env.payload["array_text"], json!("[1,2]"));
+    assert_eq!(env.payload["varchar_text"], json!("false"));
+    assert_eq!(env.payload["clob_text"], json!("{\"nested\":true}"));
+    Ok(())
+}
+
+#[tokio::test]
 async fn postgres_source_polls_rows_and_sink_inserts_rows() -> anyhow::Result<()> {
     let node = match postgres::Postgres::default().start().await {
         Ok(node) => node,

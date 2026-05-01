@@ -257,7 +257,7 @@ fn sqlite_row_to_json(row: sqlx::sqlite::SqliteRow) -> Result<Value> {
                 .unwrap_or(Value::Null),
             _ => row
                 .try_get::<Option<String>, _>(name)?
-                .map(|s| serde_json::from_str::<Value>(&s).unwrap_or(Value::String(s)))
+                .map(Value::String)
                 .unwrap_or(Value::Null),
         };
         object.insert(name.to_string(), value);

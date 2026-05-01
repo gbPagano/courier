@@ -110,6 +110,6 @@ poll_interval_secs = 30
 | `query`              | yes      | SQL query to execute every poll. Must not be empty. |
 | `poll_interval_secs` | yes      | Seconds between successive polls. Must be greater than `0`. |
 
-Each returned row becomes an envelope whose `payload` is a JSON object keyed by column name. SQL booleans, integers, floats, JSON, text, and common timestamp types are converted to JSON values. `meta.source_id` is set to the pipeline's source node id and `meta.timestamp_ms` is stamped when the row is emitted.
+Each returned row becomes an envelope whose `payload` is a JSON object keyed by column name. SQL booleans, integers, floats, JSON, text, and common timestamp types are converted to JSON values. For SQLite, text-affinity columns are emitted as strings; Courier does not parse JSON-looking text implicitly. `meta.source_id` is set to the pipeline's source node id and `meta.timestamp_ms` is stamped when the row is emitted.
 
 Polling is stateless. Courier does not persist checkpoints or remember the last row across restarts. If you need incremental behavior, put the filtering in your SQL query or query a table/view that already represents the desired window.
