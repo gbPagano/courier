@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use rdkafka::config::ClientConfig;
 use rdkafka::message::{Header, OwnedHeaders};
@@ -25,18 +25,18 @@ pub struct KafkaSink {
 }
 
 impl KafkaSink {
-    pub fn new(id: impl Into<String>, brokers: &str, topic: impl Into<String>) -> Self {
+    pub fn new(id: impl Into<String>, brokers: &str, topic: impl Into<String>) -> Result<Self> {
         let producer: FutureProducer = ClientConfig::new()
             .set("bootstrap.servers", brokers)
             .set("message.timeout.ms", "5000")
             .create()
-            .expect("Kafka Producer creation failed");
+            .context("failed to create kafka producer")?;
 
-        Self {
+        Ok(Self {
             id: id.into(),
             topic: topic.into(),
             producer,
-        }
+        })
     }
 }
 
@@ -109,7 +109,7 @@ pub fn kafka_sink_factory(
     if config.topic.trim().is_empty() {
         bail!("invalid config for component type 'kafka': topic must not be empty");
     }
-    let kafka = KafkaSink::new(id, &config.brokers, config.topic);
+    let kafka = KafkaSink::new(id, &config.brokers, config.topic)?;
     let mut sink = ManagedSink::new(kafka).with_error_policy(on_error);
     if let Some(policy) = retry {
         sink = sink.with_retry(policy);
@@ -153,7 +153,7 @@ mod tests {
         let brokers = format!("127.0.0.1:{host_port}");
 
         let topic = "courier-sink-test";
-        let sink = KafkaSink::new("kafka-sink", &brokers, topic);
+        let sink = KafkaSink::new("kafka-sink", &brokers, topic)?;
 
         // Explicit meta.key -> used as record key.
         let mut e1 = Envelope::new("src-1", json!({ "hello": "world" }));

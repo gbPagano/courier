@@ -1,4 +1,4 @@
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use rdkafka::Message;
 use rdkafka::config::ClientConfig;
@@ -30,7 +30,12 @@ pub struct KafkaSource {
 }
 
 impl KafkaSource {
-    pub fn new(id: impl Into<String>, brokers: &str, group_id: &str, topics: Vec<&str>) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        brokers: &str,
+        group_id: &str,
+        topics: Vec<&str>,
+    ) -> Result<Self> {
         let id = id.into();
         let consumer: StreamConsumer = ClientConfig::new()
             .set("group.id", group_id)
@@ -39,17 +44,17 @@ impl KafkaSource {
             .set("session.timeout.ms", "6000")
             .set("enable.auto.commit", "false")
             .create()
-            .expect("Kafka Consumer creation failed");
+            .context("failed to create kafka consumer")?;
 
         consumer
             .subscribe(&topics)
-            .expect("Can't subscribe to specified topics");
+            .context("failed to subscribe kafka consumer to specified topics")?;
 
-        Self {
+        Ok(Self {
             source_ctx: SourceCtx::new(&id),
             id,
             consumer,
-        }
+        })
     }
 }
 
@@ -197,7 +202,7 @@ pub fn kafka_source_factory(
         &config.brokers,
         &config.group_id,
         topics,
-    )))
+    )?))
 }
 
 #[cfg(test)]
@@ -275,7 +280,7 @@ mod tests {
             .set("message.timeout.ms", "5000")
             .create()?;
 
-        let source = KafkaSource::new("src", &brokers, "courier-source-group", vec![topic]);
+        let source = KafkaSource::new("src", &brokers, "courier-source-group", vec![topic])?;
         let (tx, mut rx) = mpsc::channel(8);
         let cancel = CancellationToken::new();
 
