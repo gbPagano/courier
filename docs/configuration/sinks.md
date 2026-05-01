@@ -35,7 +35,7 @@ timeout_secs = 30          # optional
 | `body`         | no       | `"payload"` | `"payload"` sends `env.payload` as the JSON body; `"envelope"` sends the full envelope (`{ "meta": ..., "payload": ... }`). |
 | `timeout_secs` | no       | none        | Per-request timeout. Omit to use the underlying `reqwest` default. |
 
-Any non-2xx response, network error, or timeout is reported as a sink failure and flows through the configured [`on_error`](../error-handling.md) and [retry](../error-handling.md#retry-on-sinks) policies. The response body, when present on a failure, is included in the error message so it surfaces in logs and dead-letter entries.
+Any non-2xx response, network error, or timeout is reported as a sink failure and flows through the configured [`on_error`](error-handling.md) and [retry](error-handling.md#retry-on-sinks) policies. The response body, when present on a failure, is included in the error message so it surfaces in logs and dead-letter entries.
 
 ## file
 
@@ -98,7 +98,7 @@ kind = "propagate"
 
 `meta.key` is used as the record key; `payload` is serialized as the record value.
 
-See [Error Handling & Retry](../error-handling.md) for `on_error` and retry configuration.
+See [Error Handling & Retry](error-handling.md) for `on_error` and retry configuration.
 
 ## sql
 
@@ -131,4 +131,4 @@ Column mappings are evaluated against the full envelope, so paths can read from 
 
 Upsert is not included in this first version. A future API should define conflict columns and update columns explicitly, because the SQL syntax and behavior differ by driver.
 
-This sink is wrapped in `ManagedSink`, so non-transient database errors, retry, dead-letter, and `on_error` behavior are handled the same way as other built-in sinks. See [Error Handling & Retry](../error-handling.md).
+This sink is wrapped in `ManagedSink`, so non-transient database errors, retry, dead-letter, and `on_error` behavior are handled the same way as other built-in sinks. See [Error Handling & Retry](error-handling.md).

@@ -22,7 +22,7 @@ Keeping a single type at the boundary lets the runtime stay generic-free at the 
 
 | Field            | Role |
 | ---------------- | ---- |
-| `meta.key`       | Logical partitioning key — used by sinks like Kafka to choose the destination partition. The built-in [`set_key`](../components/transforms.md#set_key) transform sets this from a payload field. |
+| `meta.key`       | Logical partitioning key — used by sinks like Kafka to choose the destination partition. The built-in [`set_key`](../configuration/transforms.md#set_key) transform sets this from a payload field. |
 | `meta.source_id` | Hierarchical id of the producing node, e.g. `pipeline-name/src`. Useful for observability and for transforms that want to behave differently per source. |
 | `meta.timestamp_ms` | Producer-assigned timestamp. Sources stamp it; transforms can overwrite. |
 | `meta.headers`   | Free-form string headers. Conventionally used for routing hints and metadata that should not live in the payload. |

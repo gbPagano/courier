@@ -98,11 +98,11 @@ courier run --config config.toml
 
 ## In this section
 
-- **[Pipelines](pipelines.md)** — the configuration schema for sources, transforms, sinks, and channels.
-- **[Error Handling & Retry](error-handling.md)** — `on_error`, retry policies, and dead-letter routing.
-- **[Sources](sources.md)** — source configuration reference.
-- **[Transforms](transforms.md)** — transform configuration reference.
-- **[Sinks](sinks.md)** — sink configuration reference.
+- **[Pipelines](configuration/pipelines.md)** — the configuration schema for sources, transforms, sinks, and channels.
+- **[Error Handling & Retry](configuration/error-handling.md)** — `on_error`, retry policies, and dead-letter routing.
+- **[Sources](configuration/sources.md)** — source configuration reference.
+- **[Transforms](configuration/transforms.md)** — transform configuration reference.
+- **[Sinks](configuration/sinks.md)** — sink configuration reference.
 
 ## Minimal example
 
@@ -122,4 +122,4 @@ brokers = "localhost:9092"
 topic = "topic1"
 ```
 
-See [Pipelines](pipelines.md) for the full set of fields.
+See [Pipelines](configuration/pipelines.md) for the full set of fields.
