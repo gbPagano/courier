@@ -94,7 +94,7 @@ impl Source for KafkaSource {
             let key = msg
                 .key()
                 .and_then(|k| std::str::from_utf8(k).ok())
-                .map(|s| s.trim().to_string());
+                .map(str::to_owned);
 
             let payload_bytes = match msg.payload() {
                 Some(p) => p,
