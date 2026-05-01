@@ -393,7 +393,7 @@ impl<'a> Lexer<'a> {
                             '\'' => s.push('\''),
                             other => s.push(other),
                         }
-                        self.pos += 1;
+                        self.pos += escaped.len_utf8();
                     } else {
                         s.push(c);
                         self.pos += c.len_utf8();
@@ -433,7 +433,7 @@ impl<'a> Lexer<'a> {
                 while self.pos < self.input.len() {
                     let c = self.input[self.pos..].chars().next().unwrap();
                     if c.is_alphanumeric() || c == '_' {
-                        self.pos += 1;
+                        self.pos += c.len_utf8();
                     } else {
                         break;
                     }
@@ -473,7 +473,7 @@ impl<'a> Lexer<'a> {
         while self.pos < self.input.len() {
             let c = self.input[self.pos..].chars().next().unwrap();
             if c.is_whitespace() {
-                self.pos += 1;
+                self.pos += c.len_utf8();
             } else {
                 break;
             }
@@ -821,5 +821,26 @@ mod tests {
         let err = parse_predicate("payload.status == \"ok").unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("unterminated string"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn parses_escaped_utf8_string_literal() {
+        let predicate = parse_predicate("payload.status == \"\\é\"").unwrap();
+        let t = FilterTransform::new("t", predicate);
+        let env = Envelope::new("src", json!({ "status": "é" }));
+        assert!(t.map(env).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn parses_utf8_identifier_segments() {
+        let predicate = parse_predicate("payload.café == 1").unwrap();
+        let t = FilterTransform::new("t", predicate);
+        let env = Envelope::new("src", json!({ "café": 1 }));
+        assert!(t.map(env).await.unwrap().is_some());
+    }
+
+    #[test]
+    fn skips_utf8_whitespace() {
+        parse_predicate("payload.status\u{00a0}==\u{00a0}\"ok\"").unwrap();
     }
 }
