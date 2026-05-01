@@ -29,7 +29,7 @@ All three runtimes share the same component config — just the `runtime` field 
 | ------------- | ----------- |
 | `runtime`     | One of `"rhai"`, `"lua"`, `"python"`. |
 | `script`      | Inline source. Mutually exclusive with `script_file`. |
-| `script_file` | Path to a script on disk. |
+| `script_file` | Path to a script on disk. Relative paths are resolved from the config file's directory. |
 | `entrypoint`  | Function name to call. Defaults to `"transform"`. |
 
 Runtime-specific fields (Rhai limit knobs, `python_bin`) are documented on each runtime's page.

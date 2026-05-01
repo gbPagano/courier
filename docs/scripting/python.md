@@ -46,6 +46,7 @@ def transform(env):
 ```
 
 `script` and `script_file` are mutually exclusive — set exactly one.
+Relative `script_file` paths are resolved from the config file's directory.
 
 ## Choosing the interpreter
 

@@ -163,7 +163,7 @@ fn transform(env) {
 | ------------------------- | -------- | ----------- |
 | `runtime`                 | yes      | One of `"rhai"`, `"lua"`, `"python"`. |
 | `script`                  | one of   | Inline source code. Mutually exclusive with `script_file`. |
-| `script_file`             | one of   | Path to a script on disk. |
+| `script_file`             | one of   | Path to a script on disk. Relative paths are resolved from the config file's directory. |
 | `entrypoint`              | no       | Function name to call. Defaults to `"transform"`. |
 | `python_bin`              | python   | Interpreter path. Defaults to `"python3"`. |
 | `max_operations`          | rhai     | Operation budget. Default `100000`. |

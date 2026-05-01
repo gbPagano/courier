@@ -25,6 +25,7 @@ impl Config {
         let mut json_value =
             toml_value_to_json(toml_value).context("failed to parse TOML config")?;
         interpolate_config_value(&mut json_value, base_dir)?;
+        resolve_script_file_paths(&mut json_value, base_dir);
         let raw: RawConfig =
             deserialize_json_value(json_value).context("failed to parse TOML config")?;
         Ok(raw.into())
@@ -38,6 +39,7 @@ impl Config {
         let mut json_value: Value =
             serde_json::from_str(s).context("failed to parse JSON config")?;
         interpolate_config_value(&mut json_value, base_dir)?;
+        resolve_script_file_paths(&mut json_value, base_dir);
         let raw: RawConfig =
             deserialize_json_value(json_value).context("failed to parse JSON config")?;
         Ok(raw.into())
@@ -61,6 +63,40 @@ pub(super) fn parse_by_extension(
 fn deserialize_json_value<T: DeserializeOwned>(value: Value) -> Result<T> {
     serde_json::from_value(value)
         .map_err(|err| anyhow::anyhow!("{}", redact_secret_values_in_text(&err.to_string())))
+}
+
+fn resolve_script_file_paths(value: &mut Value, base_dir: Option<&Path>) {
+    let Some(base_dir) = base_dir else {
+        return;
+    };
+    let Some(pipelines) = value.get_mut("pipelines").and_then(Value::as_array_mut) else {
+        return;
+    };
+
+    for pipeline in pipelines {
+        let Some(transforms) = pipeline.get_mut("transforms").and_then(Value::as_array_mut) else {
+            continue;
+        };
+
+        for transform in transforms {
+            if transform.get("type").and_then(Value::as_str) != Some("script") {
+                continue;
+            }
+
+            let resolved = transform
+                .get("script_file")
+                .and_then(Value::as_str)
+                .and_then(|script_file| {
+                    let path = Path::new(script_file);
+                    path.is_relative()
+                        .then(|| base_dir.join(path).to_string_lossy().into_owned())
+                });
+
+            if let Some(resolved) = resolved {
+                transform["script_file"] = Value::String(resolved);
+            }
+        }
+    }
 }
 
 fn toml_table_to_json(table: Table) -> Result<Value> {

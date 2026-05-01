@@ -240,6 +240,48 @@ mod tests {
     }
 
     #[test]
+    fn load_resolves_script_file_relative_to_config_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let script_dir = dir.path().join("transforms");
+        std::fs::create_dir(&script_dir).unwrap();
+        std::fs::write(script_dir.join("enrich.rhai"), "fn transform(env) { env }").unwrap();
+
+        let config_path = dir.path().join("courier.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+            [[pipelines]]
+            name = "script-path"
+
+            [pipelines.source]
+            type = "noop"
+
+            [[pipelines.transforms]]
+            type = "script"
+            runtime = "rhai"
+            script_file = "./transforms/enrich.rhai"
+
+            [[pipelines.sinks]]
+            type = "noop"
+            "#,
+        )
+        .unwrap();
+
+        let config = Config::load(&config_path).unwrap();
+        let script_file = config.pipelines[0].transforms[0].config["script_file"]
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            script_file,
+            dir.path()
+                .join("./transforms/enrich.rhai")
+                .to_string_lossy()
+                .as_ref()
+        );
+        assert!(std::path::Path::new(script_file).is_absolute());
+    }
+
+    #[test]
     fn load_directory_rejects_duplicate_pipeline_names() {
         let dir = tempfile::tempdir().unwrap();
         let body = r#"
