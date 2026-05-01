@@ -101,7 +101,11 @@ impl MapOne for MutateTransform {
 fn apply_operation(env: &mut Envelope, op: &Operation, mode: MissingMode) -> Result<()> {
     match op {
         Operation::AddField { path, value } => {
-            set_path(&mut env.payload, path, value.clone(), true)?;
+            if mode == MissingMode::Strict {
+                set_path(&mut env.payload, path, value.clone(), true)?;
+            } else {
+                set_path_lenient(&mut env.payload, path, value.clone())?;
+            }
         }
         Operation::RemoveField { path } => match remove_path(&mut env.payload, path)? {
             Some(removed) => {
@@ -211,6 +215,41 @@ fn set_path(root: &mut Value, path: &str, value: Value, create: bool) -> Result<
     Ok(())
 }
 
+fn set_path_lenient(root: &mut Value, path: &str, value: Value) -> Result<()> {
+    if let Some((map, key)) = navigate_to_parent_lenient_create(root, path)? {
+        map.insert(key, value);
+    }
+    Ok(())
+}
+
+fn navigate_to_parent_lenient_create<'a>(
+    root: &'a mut Value,
+    path: &str,
+) -> Result<Option<(&'a mut serde_json::Map<String, Value>, String)>> {
+    let segments = split_path(path);
+    if segments.is_empty() {
+        bail!("mutate: empty path");
+    }
+
+    let mut current = root;
+    for segment in &segments[..segments.len() - 1] {
+        if !current.is_object() {
+            return Ok(None);
+        }
+
+        let map = current.as_object_mut().unwrap();
+        if !map.contains_key(*segment) {
+            map.insert(segment.to_string(), Value::Object(serde_json::Map::new()));
+        }
+        current = map.get_mut(*segment).unwrap();
+    }
+
+    match current {
+        Value::Object(map) => Ok(Some((map, segments.last().unwrap().to_string()))),
+        _ => Ok(None),
+    }
+}
+
 fn remove_path(root: &mut Value, path: &str) -> Result<Option<bool>> {
     Ok(navigate_to_parent(root, path, false)?.map(|(map, key)| map.remove(&key).is_some()))
 }
@@ -289,7 +328,8 @@ fn cast_value(value: &Value, to: CastType) -> Result<Value> {
             Ok(Value::Bool(b))
         }
         CastType::Json => match value {
-            Value::String(s) => Ok(serde_json::from_str(s).unwrap_or(Value::Null)),
+            Value::String(s) => serde_json::from_str(s)
+                .map_err(|err| anyhow::anyhow!("mutate: cannot cast string to json: {err}")),
             other => Ok(other.clone()),
         },
     }
@@ -361,6 +401,36 @@ mod tests {
         let env = Envelope::new("src", json!({ "user": { "name": "alice" } }));
         let out = t.map(env).await.unwrap().unwrap();
         assert_eq!(out.payload["user"]["name"], "bob");
+    }
+
+    #[tokio::test]
+    async fn add_field_lenient_creates_missing_intermediate_path() {
+        let t = MutateTransform::new(
+            "t",
+            vec![Operation::AddField {
+                path: "user.name".into(),
+                value: json!("alice"),
+            }],
+            MissingMode::Lenient,
+        );
+        let env = Envelope::new("src", json!({}));
+        let out = t.map(env).await.unwrap().unwrap();
+        assert_eq!(out.payload, json!({ "user": { "name": "alice" } }));
+    }
+
+    #[tokio::test]
+    async fn add_field_lenient_skips_non_object_parent() {
+        let t = MutateTransform::new(
+            "t",
+            vec![Operation::AddField {
+                path: "user.name".into(),
+                value: json!("alice"),
+            }],
+            MissingMode::Lenient,
+        );
+        let env = Envelope::new("src", json!({ "user": 1 }));
+        let out = t.map(env).await.unwrap().unwrap();
+        assert_eq!(out.payload, json!({ "user": 1 }));
     }
 
     #[tokio::test]
@@ -492,6 +562,24 @@ mod tests {
         let env = Envelope::new("src", json!({ "value": "{\"nested\":true}" }));
         let out = t.map(env).await.unwrap().unwrap();
         assert_eq!(out.payload["value"], json!({ "nested": true }));
+    }
+
+    #[tokio::test]
+    async fn cast_string_to_json_errors_when_invalid() {
+        let t = MutateTransform::new(
+            "t",
+            vec![Operation::Cast {
+                path: "value".into(),
+                to_type: CastType::Json,
+            }],
+            MissingMode::Strict,
+        );
+        let env = Envelope::new("src", json!({ "value": "not json" }));
+        let err = t.map(env).await.err().expect("expected invalid json error");
+        assert!(
+            err.to_string().contains("cannot cast string to json"),
+            "{err}"
+        );
     }
 
     #[tokio::test]
