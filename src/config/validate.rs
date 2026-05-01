@@ -38,7 +38,7 @@ impl Config {
             }
 
             if let Some(retry) = &pipeline.source.retry {
-                validate_retry_policy(retry, &format!("{pipeline_label}.source.retry"))?;
+                validate_retry_policy(retry, &format!("{pipeline_label}.source.retry"), false)?;
             }
 
             if matches!(pipeline.channel_capacity, Some(0)) {
@@ -65,6 +65,7 @@ impl Config {
                     validate_retry_policy(
                         retry,
                         &format!("{pipeline_label}.sinks[{sink_index}].retry"),
+                        true,
                     )?;
                 }
             }
@@ -105,7 +106,7 @@ fn validate_observability(obs: &ObservabilityConfig) -> Result<()> {
     Ok(())
 }
 
-fn validate_retry_policy(policy: &RetryPolicy, path: &str) -> Result<()> {
+fn validate_retry_policy(policy: &RetryPolicy, path: &str, allow_dead_letter: bool) -> Result<()> {
     if policy.max_attempts == 0 {
         bail!("{path}.max_attempts: must be greater than or equal to 1");
     }
@@ -128,6 +129,10 @@ fn validate_retry_policy(policy: &RetryPolicy, path: &str) -> Result<()> {
     }
 
     if let crate::retry::ExhaustedPolicy::DeadLetter { path: dlq_path } = &policy.on_exhausted {
+        if !allow_dead_letter {
+            bail!("{path}.on_exhausted: dead_letter is only supported for sink retry policies");
+        }
+
         if dlq_path.as_os_str().is_empty() {
             bail!("{path}.on_exhausted.path: dead-letter path must not be empty");
         }
@@ -275,6 +280,43 @@ mod tests {
         let msg = format!("{:#}", config.validate().unwrap_err());
         assert!(
             msg.contains("pipeline 'p'.source.retry.max_attempts"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_source_retry_dead_letter() {
+        let dir = tempfile::tempdir().unwrap();
+        let dlq_path = dir.path().join("source-dlq.jsonl");
+        let config = Config::from_toml_str(&format!(
+            r#"
+            [[pipelines]]
+            name = "p"
+
+            [pipelines.source]
+            type = "api_poll"
+
+            [pipelines.source.retry]
+            max_attempts = 3
+            initial_delay_ms = 1
+            backoff_multiplier = 1.0
+            max_delay_ms = 1
+            on_exhausted = {{ kind = "dead_letter", path = "{}" }}
+
+            [[pipelines.sinks]]
+            type = "noop"
+            "#,
+            dlq_path.display()
+        ))
+        .unwrap();
+
+        let msg = format!("{:#}", config.validate().unwrap_err());
+        assert!(
+            msg.contains("pipeline 'p'.source.retry.on_exhausted"),
+            "{msg}"
+        );
+        assert!(
+            msg.contains("dead_letter is only supported for sink retry policies"),
             "{msg}"
         );
     }
