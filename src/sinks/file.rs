@@ -128,9 +128,9 @@ impl WriteOne for FileSink {
                 let env_value = serde_json::to_value(env)?;
                 let mut state = self.state.lock().await;
                 self.ensure_open(&mut state)?;
+                let wrote_header = state.needs_header;
                 if state.needs_header {
                     write_csv_row(&mut buf, columns.iter().map(String::as_str));
-                    state.needs_header = false;
                 }
                 let row = columns.iter().map(|col| extract_csv_cell(&env_value, col));
                 let row_strings: Vec<String> = row.collect();
@@ -154,6 +154,9 @@ impl WriteOne for FileSink {
                     .map_err(|e| {
                         anyhow!("flush of {} failed: {e}", redact_secret_path(&self.path))
                     })?;
+                if wrote_header {
+                    state.needs_header = false;
+                }
                 return Ok(());
             }
         }
@@ -416,6 +419,34 @@ mod tests {
         let contents = read(&path);
         let lines: Vec<&str> = contents.lines().collect();
         assert_eq!(lines, vec!["payload.id,payload.name", "1,alice", "2,bob"]);
+    }
+
+    #[tokio::test]
+    #[cfg(target_os = "linux")]
+    async fn csv_keeps_header_pending_after_write_failure() {
+        let dev_full = Path::new("/dev/full");
+        if !dev_full.exists() {
+            return;
+        }
+
+        let sink = FileSink::new(
+            "file",
+            dev_full,
+            Format::Csv {
+                columns: vec!["payload.id".into()],
+            },
+        )
+        .unwrap();
+
+        sink.write(&Envelope::new("src", json!({ "id": 1 })))
+            .await
+            .expect_err("expected write to /dev/full to fail");
+
+        let state = sink.state.lock().await;
+        assert!(
+            state.needs_header,
+            "header should remain pending until write and flush succeed"
+        );
     }
 
     #[tokio::test]
