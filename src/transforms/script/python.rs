@@ -15,7 +15,6 @@ use super::{ScriptEngine, ScriptTransformConfig};
 
 const PYTHON_BOOTSTRAP: &str = r#"
 import json
-import os
 import sys
 import traceback
 
@@ -23,7 +22,8 @@ entrypoint_name = sys.argv[1]
 namespace = {}
 
 try:
-    exec(os.environ['COURIER_PYTHON_SCRIPT'], namespace)
+    script = json.loads(sys.stdin.readline())
+    exec(script, namespace)
     entrypoint = namespace.get(entrypoint_name)
     if not callable(entrypoint):
         raise RuntimeError(f"missing Python entrypoint '{entrypoint_name}'")
@@ -101,7 +101,6 @@ impl PythonEngine {
             .arg("-c")
             .arg(PYTHON_BOOTSTRAP)
             .arg(&config.entrypoint)
-            .env("COURIER_PYTHON_SCRIPT", &config.script)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -113,7 +112,7 @@ impl PythonEngine {
                 )
             })?;
 
-        let stdin = child
+        let mut stdin = child
             .stdin
             .take()
             .context("failed to capture Python stdin")?;
@@ -121,6 +120,14 @@ impl PythonEngine {
             .stdout
             .take()
             .context("failed to capture Python stdout")?;
+        serde_json::to_writer(&mut stdin, &config.script)
+            .context("failed to encode Python script for bootstrap")?;
+        stdin
+            .write_all(b"\n")
+            .context("failed to write Python bootstrap script delimiter")?;
+        stdin
+            .flush()
+            .context("failed to flush Python bootstrap script")?;
         let mut stdout = BufReader::new(stdout);
 
         let mut line = String::new();
@@ -299,6 +306,32 @@ def transform(env):
             .run(Envelope::new("src", json!({ "skip": true })))
             .unwrap();
         assert!(out.is_none());
+    }
+
+    #[test]
+    fn script_is_not_exposed_to_python_child_processes_as_env() {
+        let engine = PythonEngine::new(&config(
+            r#"
+import subprocess
+import sys
+
+def transform(env):
+    out = subprocess.check_output([
+        sys.executable,
+        "-c",
+        "import os; print(os.environ.get('COURIER_PYTHON_SCRIPT', ''))",
+    ], text=True)
+    env["payload"]["inherited_script"] = out.strip()
+    return env
+"#,
+        ))
+        .unwrap();
+
+        let out = engine
+            .run(Envelope::new("src", json!({})))
+            .unwrap()
+            .unwrap();
+        assert_eq!(out.payload, json!({ "inherited_script": "" }));
     }
 
     #[test]
