@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, anyhow, bail};
+use async_trait::async_trait;
 use rhai::serde::{from_dynamic, to_dynamic};
 use rhai::{AST, Dynamic, Engine, Scope};
 
@@ -13,8 +14,9 @@ pub struct RhaiEngine {
     entrypoint: String,
 }
 
+#[async_trait]
 impl ScriptEngine for RhaiEngine {
-    fn run(&self, env: Envelope) -> Result<Option<Envelope>> {
+    async fn run(&self, env: Envelope) -> Result<Option<Envelope>> {
         self.run_inner(env)
     }
 }

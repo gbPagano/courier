@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, anyhow, bail};
+use async_trait::async_trait;
 use mlua::{Function, Lua, LuaSerdeExt, MultiValue, Value};
 
 use crate::config::redact_secret;
@@ -11,8 +12,9 @@ pub struct LuaEngine {
     entrypoint: String,
 }
 
+#[async_trait]
 impl ScriptEngine for LuaEngine {
-    fn run(&self, env: Envelope) -> Result<Option<Envelope>> {
+    async fn run(&self, env: Envelope) -> Result<Option<Envelope>> {
         self.run_inner(env)
     }
 }

@@ -14,8 +14,9 @@ pub mod lua;
 pub mod python;
 pub mod rhai;
 
+#[async_trait]
 trait ScriptEngine: Send + Sync {
-    fn run(&self, env: Envelope) -> Result<Option<Envelope>>;
+    async fn run(&self, env: Envelope) -> Result<Option<Envelope>>;
 }
 
 struct ScriptMapOne<E: ScriptEngine> {
@@ -39,7 +40,7 @@ impl<E: ScriptEngine> MapOne for ScriptMapOne<E> {
     }
 
     async fn map(&self, env: Envelope) -> Result<Option<Envelope>> {
-        self.engine.run(env)
+        self.engine.run(env).await
     }
 }
 

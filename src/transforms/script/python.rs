@@ -1,10 +1,12 @@
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, anyhow, bail};
+use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
+use tokio::task;
 
 use crate::config::redact_secret;
 use crate::envelope::Envelope;
@@ -52,7 +54,7 @@ for line in sys.stdin:
 
 pub struct PythonEngine {
     entrypoint: String,
-    worker: Mutex<PythonWorker>,
+    worker: Arc<Mutex<PythonWorker>>,
 }
 
 struct PythonWorker {
@@ -75,9 +77,15 @@ struct PythonRunResponse {
     error: Option<String>,
 }
 
+#[async_trait]
 impl ScriptEngine for PythonEngine {
-    fn run(&self, env: Envelope) -> Result<Option<Envelope>> {
-        self.run_inner(env)
+    async fn run(&self, env: Envelope) -> Result<Option<Envelope>> {
+        let worker = Arc::clone(&self.worker);
+        let entrypoint = self.entrypoint.clone();
+
+        task::spawn_blocking(move || run_python_worker(&worker, &entrypoint, env))
+            .await
+            .context("Python runtime task failed")?
     }
 }
 
@@ -134,69 +142,72 @@ impl PythonEngine {
 
         Ok(Self {
             entrypoint: config.entrypoint.clone(),
-            worker: Mutex::new(PythonWorker {
+            worker: Arc::new(Mutex::new(PythonWorker {
                 child,
                 stdin: BufWriter::new(stdin),
                 stdout,
-            }),
+            })),
         })
     }
 
     #[cfg(test)]
     fn run(&self, env: Envelope) -> Result<Option<Envelope>> {
-        self.run_inner(env)
+        run_python_worker(&self.worker, &self.entrypoint, env)
+    }
+}
+
+fn run_python_worker(
+    worker: &Mutex<PythonWorker>,
+    entrypoint: &str,
+    env: Envelope,
+) -> Result<Option<Envelope>> {
+    let mut worker = worker
+        .lock()
+        .map_err(|_| anyhow!("Python worker lock poisoned"))?;
+
+    serde_json::to_writer(&mut worker.stdin, &env)
+        .context("failed to encode envelope for Python runtime")?;
+    worker
+        .stdin
+        .write_all(b"\n")
+        .context("failed to write Python request delimiter")?;
+    worker
+        .stdin
+        .flush()
+        .context("failed to flush Python request")?;
+
+    let mut line = String::new();
+    let bytes = worker
+        .stdout
+        .read_line(&mut line)
+        .context("failed to read Python runtime response")?;
+    if bytes == 0 {
+        bail!(
+            "Python entrypoint '{}' exited before returning a response",
+            entrypoint
+        );
     }
 
-    fn run_inner(&self, env: Envelope) -> Result<Option<Envelope>> {
-        let mut worker = self
-            .worker
-            .lock()
-            .map_err(|_| anyhow!("Python worker lock poisoned"))?;
-
-        serde_json::to_writer(&mut worker.stdin, &env)
-            .context("failed to encode envelope for Python runtime")?;
-        worker
-            .stdin
-            .write_all(b"\n")
-            .context("failed to write Python request delimiter")?;
-        worker
-            .stdin
-            .flush()
-            .context("failed to flush Python request")?;
-
-        let mut line = String::new();
-        let bytes = worker
-            .stdout
-            .read_line(&mut line)
-            .context("failed to read Python runtime response")?;
-        if bytes == 0 {
-            bail!(
-                "Python entrypoint '{}' exited before returning a response",
-                self.entrypoint
-            );
-        }
-
-        let response: PythonRunResponse = serde_json::from_str(line.trim_end())
-            .context("failed to parse Python runtime response")?;
-        if !response.ok {
-            bail!(
-                "Python entrypoint '{}' failed: {}",
-                self.entrypoint,
-                response.error.unwrap_or_else(|| "unknown error".into())
-            );
-        }
-
-        if response.filtered.unwrap_or(false) {
-            return Ok(None);
-        }
-
-        let env = response
-            .env
-            .context("Python runtime did not return an envelope")?;
-        serde_json::from_value(env).map(Some).map_err(|err| {
-            anyhow!(err).context("failed to convert Python return value into envelope")
-        })
+    let response: PythonRunResponse =
+        serde_json::from_str(line.trim_end()).context("failed to parse Python runtime response")?;
+    if !response.ok {
+        bail!(
+            "Python entrypoint '{}' failed: {}",
+            entrypoint,
+            response.error.unwrap_or_else(|| "unknown error".into())
+        );
     }
+
+    if response.filtered.unwrap_or(false) {
+        return Ok(None);
+    }
+
+    let env = response
+        .env
+        .context("Python runtime did not return an envelope")?;
+    serde_json::from_value(env)
+        .map(Some)
+        .map_err(|err| anyhow!(err).context("failed to convert Python return value into envelope"))
 }
 
 impl Drop for PythonEngine {
