@@ -234,14 +234,19 @@ pub(crate) fn spawn_pipeline(p: Pipeline, cancel: CancellationToken) -> Vec<Join
             let c = cancel.clone();
             let splitter_log_id = splitter_id.clone();
             handles.push(tokio::spawn(async move {
-                loop {
+                'splitter: loop {
                     tokio::select! {
                         _ = c.cancelled() => break,
                         maybe = prev_rx.recv() => {
                             let Some(env) = maybe else { break };
                             for tx in &sink_txs {
-                                if tx.send(env.clone()).await.is_err() {
-                                    tracing::debug!(node_id = %redact_secret(&splitter_log_id), "downstream sink closed");
+                                tokio::select! {
+                                    _ = c.cancelled() => break 'splitter,
+                                    res = tx.send(env.clone()) => {
+                                        if res.is_err() {
+                                            tracing::debug!(node_id = %redact_secret(&splitter_log_id), "downstream sink closed");
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -351,7 +356,10 @@ mod tests {
     use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
     use serde_json::json;
     use std::sync::{Arc, Mutex, OnceLock};
-    use tokio::sync::mpsc::{self, Sender};
+    use tokio::sync::{
+        Notify,
+        mpsc::{self, Receiver, Sender},
+    };
     use tracing_subscriber::layer::SubscriberExt;
 
     use super::*;
@@ -431,6 +439,71 @@ mod tests {
 
         async fn write(&self, _env: &Envelope) -> Result<()> {
             Ok(())
+        }
+    }
+
+    struct BurstSource {
+        count: usize,
+    }
+
+    #[async_trait]
+    impl Source for BurstSource {
+        fn id(&self) -> &str {
+            "burst"
+        }
+
+        async fn run(self: Box<Self>, tx: Sender<Envelope>, cancel: CancellationToken) {
+            for i in 0..self.count {
+                let env = Envelope::new("burst", json!({ "n": i }));
+                tokio::select! {
+                    _ = cancel.cancelled() => break,
+                    res = tx.send(env) => {
+                        if res.is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    struct StallAfterFirstReceiveSink {
+        first_received: Arc<Notify>,
+    }
+
+    #[async_trait]
+    impl Sink for StallAfterFirstReceiveSink {
+        fn id(&self) -> &str {
+            "stall"
+        }
+
+        async fn run(self: Box<Self>, mut rx: Receiver<Envelope>, _cancel: CancellationToken) {
+            if rx.recv().await.is_some() {
+                self.first_received.notify_one();
+                futures::future::pending::<()>().await;
+            }
+        }
+    }
+
+    struct DrainSink;
+
+    #[async_trait]
+    impl Sink for DrainSink {
+        fn id(&self) -> &str {
+            "drain"
+        }
+
+        async fn run(self: Box<Self>, mut rx: Receiver<Envelope>, cancel: CancellationToken) {
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => break,
+                    maybe = rx.recv() => {
+                        if maybe.is_none() {
+                            break;
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -565,6 +638,37 @@ mod tests {
                 &[("pipeline", "metrics"), ("node_id", "metrics/sink0")]
             ),
             50
+        );
+    }
+
+    #[tokio::test]
+    async fn broadcast_splitter_observes_cancel_while_blocked_on_sink_send() {
+        let first_received = Arc::new(Notify::new());
+        let pipeline = Pipeline::new("broadcast-cancel", Box::new(BurstSource { count: 32 }))
+            .with_channel_capacity(1)
+            .with_sink(Box::new(StallAfterFirstReceiveSink {
+                first_received: first_received.clone(),
+            }))
+            .with_sink(Box::new(DrainSink));
+
+        let cancel = CancellationToken::new();
+        let mut handles = spawn_pipeline(pipeline, cancel.clone());
+        let splitter = handles
+            .pop()
+            .expect("broadcast splitter should be the final spawned task");
+
+        first_received.notified().await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        cancel.cancel();
+
+        let result = tokio::time::timeout(Duration::from_millis(250), splitter).await;
+        for handle in handles {
+            handle.abort();
+        }
+
+        assert!(
+            result.is_ok(),
+            "broadcast splitter did not exit promptly after cancellation"
         );
     }
 
