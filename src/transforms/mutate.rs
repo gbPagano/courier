@@ -575,7 +575,7 @@ mod tests {
             MissingMode::Strict,
         );
         let env = Envelope::new("src", json!({ "value": "not json" }));
-        let err = t.map(env).await.err().expect("expected invalid json error");
+        let err = t.map(env).await.expect_err("expected invalid json error");
         assert!(
             err.to_string().contains("cannot cast string to json"),
             "{err}"
