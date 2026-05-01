@@ -1,5 +1,6 @@
 use anyhow::Result;
 use tokio::io::AsyncWriteExt;
+use tokio_util::sync::CancellationToken;
 
 use crate::config::{redact_secret, redact_secret_path};
 use crate::envelope::Envelope;
@@ -11,6 +12,7 @@ use crate::sinks::WriteOne;
 pub(crate) enum WriteOutcome {
     Written,
     DeadLettered,
+    Cancelled,
 }
 
 /// Attempts to write `env` via `inner`, retrying on failure according to
@@ -25,8 +27,13 @@ pub(crate) async fn write_with_retry<W: WriteOne>(
     env: &Envelope,
     policy: &RetryPolicy,
     ctx: &NodeCtx,
+    cancel: &CancellationToken,
 ) -> Result<WriteOutcome> {
     for attempt in 0..policy.max_attempts {
+        if cancel.is_cancelled() {
+            return Ok(WriteOutcome::Cancelled);
+        }
+
         match inner.write(env).await {
             Ok(()) => return Ok(WriteOutcome::Written),
             Err(e) if attempt + 1 == policy.max_attempts => {
@@ -43,7 +50,10 @@ pub(crate) async fn write_with_retry<W: WriteOne>(
                     error = %e,
                     "write failed, retrying"
                 );
-                tokio::time::sleep(delay).await;
+                tokio::select! {
+                    _ = cancel.cancelled() => return Ok(WriteOutcome::Cancelled),
+                    _ = tokio::time::sleep(delay) => {}
+                }
             }
         }
     }
@@ -110,10 +120,12 @@ async fn on_exhausted(
 mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
+    use std::time::Duration;
 
     use anyhow::anyhow;
     use async_trait::async_trait;
     use serde_json::json;
+    use tokio_util::sync::CancellationToken;
 
     use super::*;
     use crate::envelope::Envelope;
@@ -168,8 +180,9 @@ mod tests {
         let (w, calls) = writer(0);
         let policy = fast_policy(3, ExhaustedPolicy::Propagate);
         let env = Envelope::new("src", json!({}));
+        let cancel = CancellationToken::new();
         assert!(
-            write_with_retry(&w, &env, &policy, &NodeCtx::noop())
+            write_with_retry(&w, &env, &policy, &NodeCtx::noop(), &cancel)
                 .await
                 .is_ok()
         );
@@ -181,13 +194,45 @@ mod tests {
         let (w, calls) = writer(2);
         let policy = fast_policy(3, ExhaustedPolicy::Propagate);
         let env = Envelope::new("src", json!({}));
+        let cancel = CancellationToken::new();
         assert_eq!(
-            write_with_retry(&w, &env, &policy, &NodeCtx::noop())
+            write_with_retry(&w, &env, &policy, &NodeCtx::noop(), &cancel)
                 .await
                 .unwrap(),
             WriteOutcome::Written
         );
         assert_eq!(calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn retry_sleep_stops_when_cancelled() {
+        let (w, calls) = writer(5);
+        let policy = RetryPolicy {
+            max_attempts: 3,
+            initial_delay_ms: 60_000,
+            backoff_multiplier: 1.0,
+            max_delay_ms: 60_000,
+            on_exhausted: ExhaustedPolicy::Propagate,
+        };
+        let env = Envelope::new("src", json!({}));
+        let cancel = CancellationToken::new();
+        let cancel_after = cancel.clone();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            cancel_after.cancel();
+        });
+
+        let outcome = tokio::time::timeout(
+            Duration::from_millis(250),
+            write_with_retry(&w, &env, &policy, &NodeCtx::noop(), &cancel),
+        )
+        .await
+        .expect("retry sleep should stop promptly after cancellation")
+        .unwrap();
+
+        assert_eq!(outcome, WriteOutcome::Cancelled);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -197,8 +242,11 @@ mod tests {
         let (w, calls) = writer(2);
         let policy = fast_policy(3, ExhaustedPolicy::Propagate);
         let env = Envelope::new("src", json!({}));
+        let cancel = CancellationToken::new();
 
-        write_with_retry(&w, &env, &policy, &ctx).await.unwrap();
+        write_with_retry(&w, &env, &policy, &ctx, &cancel)
+            .await
+            .unwrap();
         handle.shutdown();
 
         assert_eq!(calls.load(Ordering::SeqCst), 3);
@@ -217,8 +265,9 @@ mod tests {
         let (w, calls) = writer(5);
         let policy = fast_policy(3, ExhaustedPolicy::Propagate);
         let env = Envelope::new("src", json!({}));
+        let cancel = CancellationToken::new();
         assert!(
-            write_with_retry(&w, &env, &policy, &NodeCtx::noop())
+            write_with_retry(&w, &env, &policy, &NodeCtx::noop(), &cancel)
                 .await
                 .is_err()
         );
@@ -234,9 +283,10 @@ mod tests {
         let policy = fast_policy(2, ExhaustedPolicy::DeadLetter { path: path.clone() });
         let mut env = Envelope::new("src", json!({"x": 1}));
         env.meta.key = Some("k1".into());
+        let cancel = CancellationToken::new();
 
         assert_eq!(
-            write_with_retry(&w, &env, &policy, &NodeCtx::noop())
+            write_with_retry(&w, &env, &policy, &NodeCtx::noop(), &cancel)
                 .await
                 .unwrap(),
             WriteOutcome::DeadLettered
@@ -265,8 +315,11 @@ mod tests {
         let (w, _) = writer(5);
         let policy = fast_policy(1, ExhaustedPolicy::DeadLetter { path });
         let env = Envelope::new("src", json!({}));
+        let cancel = CancellationToken::new();
 
-        write_with_retry(&w, &env, &policy, &ctx).await.unwrap();
+        write_with_retry(&w, &env, &policy, &ctx, &cancel)
+            .await
+            .unwrap();
         handle.shutdown();
 
         assert_eq!(
@@ -288,7 +341,8 @@ mod tests {
             let (w, _) = writer(5);
             let policy = fast_policy(1, ExhaustedPolicy::DeadLetter { path: path.clone() });
             let env = Envelope::new("src", json!({"i": i}));
-            write_with_retry(&w, &env, &policy, &NodeCtx::noop())
+            let cancel = CancellationToken::new();
+            write_with_retry(&w, &env, &policy, &NodeCtx::noop(), &cancel)
                 .await
                 .unwrap();
         }

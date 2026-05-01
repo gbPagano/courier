@@ -123,7 +123,7 @@ impl<W: WriteOne + 'static> Sink for ManagedSink<W> {
                     let started = Instant::now();
                     let result = async {
                         match &self.retry {
-                            Some(policy) => retry::write_with_retry(&self.inner, &env, policy, &ctx).await,
+                            Some(policy) => retry::write_with_retry(&self.inner, &env, policy, &ctx, &cancel).await,
                             None => self.inner.write(&env).await.map(|()| WriteOutcome::Written),
                         }
                     }
@@ -140,6 +140,10 @@ impl<W: WriteOne + 'static> Sink for ManagedSink<W> {
                         }
                         Ok(WriteOutcome::DeadLettered) => {
                             ctx.record_failed();
+                        }
+                        Ok(WriteOutcome::Cancelled) => {
+                            tracing::debug!(node_id = %redact_secret(&id), reason = "cancel", "sink retry interrupted by cancellation");
+                            break;
                         }
                         Err(e) => {
                             ctx.record_failed();
