@@ -9,6 +9,13 @@ documentation = "https://gbpagano.github.io/courier/"
 readme = "README.md"
 homepage = "https://gbpagano.github.io/courier/"
 repository = "https://github.com/gbPagano/courier"
+exclude = [
+    "/.github/",
+    "/docs/",
+    "/examples/",
+    "/CLAUDE.md",
+    "/zensical.toml",
+]
 
 [lib]
 name = "courier"
