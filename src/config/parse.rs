@@ -22,7 +22,8 @@ impl Config {
 
     pub(super) fn from_toml_str_with_base(s: &str, base_dir: Option<&Path>) -> Result<Self> {
         let toml_value: TomlValue = toml::from_str(s).context("failed to parse TOML config")?;
-        let mut json_value = toml_value_to_json(toml_value);
+        let mut json_value =
+            toml_value_to_json(toml_value).context("failed to parse TOML config")?;
         interpolate_config_value(&mut json_value, base_dir)?;
         let raw: RawConfig =
             deserialize_json_value(json_value).context("failed to parse TOML config")?;
@@ -62,29 +63,33 @@ fn deserialize_json_value<T: DeserializeOwned>(value: Value) -> Result<T> {
         .map_err(|err| anyhow::anyhow!("{}", redact_secret_values_in_text(&err.to_string())))
 }
 
-fn toml_table_to_json(table: Table) -> Value {
-    Value::Object(
+fn toml_table_to_json(table: Table) -> Result<Value> {
+    Ok(Value::Object(
         table
             .into_iter()
-            .map(|(key, value)| (key, toml_value_to_json(value)))
-            .collect::<serde_json::Map<String, Value>>(),
-    )
+            .map(|(key, value)| toml_value_to_json(value).map(|value| (key, value)))
+            .collect::<Result<serde_json::Map<String, Value>>>()?,
+    ))
 }
 
-fn toml_value_to_json(value: TomlValue) -> Value {
-    match value {
+fn toml_value_to_json(value: TomlValue) -> Result<Value> {
+    Ok(match value {
         TomlValue::String(value) => Value::String(value),
         TomlValue::Integer(value) => Value::Number(serde_json::Number::from(value)),
-        TomlValue::Float(value) => {
-            Value::Number(serde_json::Number::from_f64(value).expect("TOML float should be finite"))
-        }
+        TomlValue::Float(value) => Value::Number(
+            serde_json::Number::from_f64(value)
+                .ok_or_else(|| anyhow::anyhow!("non-finite TOML floats are not supported"))?,
+        ),
         TomlValue::Boolean(value) => Value::Bool(value),
         TomlValue::Datetime(value) => Value::String(value.to_string()),
-        TomlValue::Array(values) => {
-            Value::Array(values.into_iter().map(toml_value_to_json).collect())
-        }
-        TomlValue::Table(table) => toml_table_to_json(table),
-    }
+        TomlValue::Array(values) => Value::Array(
+            values
+                .into_iter()
+                .map(toml_value_to_json)
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        TomlValue::Table(table) => toml_table_to_json(table)?,
+    })
 }
 
 #[cfg(test)]
@@ -241,6 +246,33 @@ mod tests {
         let err = Config::from_toml_str("not valid toml ===").unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("failed to parse TOML config"), "{msg}");
+    }
+
+    #[test]
+    fn from_toml_str_rejects_non_finite_floats_without_panicking() {
+        for value in ["nan", "inf", "-inf"] {
+            let err = Config::from_toml_str(&format!(
+                r#"
+                [[pipelines]]
+                name = "p"
+
+                [pipelines.source]
+                type = "noop"
+                threshold = {value}
+
+                [[pipelines.sinks]]
+                type = "noop"
+                "#
+            ))
+            .unwrap_err();
+
+            let msg = format!("{err:#}");
+            assert!(msg.contains("failed to parse TOML config"), "{msg}");
+            assert!(
+                msg.contains("non-finite TOML floats are not supported"),
+                "{msg}"
+            );
+        }
     }
 
     #[test]
