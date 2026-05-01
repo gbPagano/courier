@@ -2,3 +2,5 @@
 /site
 /.cache
 /out
+/.codex
+/.openclaude-profile.json
