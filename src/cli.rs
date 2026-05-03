@@ -11,6 +11,7 @@ pub const CONFIG_ENV_VAR: &str = "COURIER_CONFIG";
 
 #[derive(Debug, Parser)]
 #[command(
+    version,
     name = "courier",
     about = "Run and inspect Courier pipeline runtimes",
     subcommand_required = true,
