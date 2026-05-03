@@ -10,6 +10,7 @@ pub mod http_webhook;
 pub mod kafka;
 mod retry;
 pub mod sql;
+pub mod object_storage;
 
 /// A pipeline source.
 ///
