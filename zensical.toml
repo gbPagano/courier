@@ -40,7 +40,7 @@ edit_uri = "edit/main/docs/"
 #
 # Read more: https://zensical.org/docs/setup/basics/#copyright
 copyright = """
-Copyright &copy; 2026 gbPagano &mdash; Licensed under <a href="https://github.com/gbPagano/courier/blob/main/LICENSE-MIT">MIT</a> or <a href="https://github.com/gbPagano/courier/blob/main/LICENSE-APACHE">Apache 2.0</a>
+Copyright &copy; 2026 gbPagano &mdash; Licensed under <a href="https://github.com/gbPagano/courier/blob/main/LICENSE">MPL 2.0</a>
 """
 
 # Zensical supports both implicit navigation and explicitly defined navigation.

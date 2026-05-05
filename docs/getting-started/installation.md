@@ -15,7 +15,7 @@ icon: lucide/download
 Install the current beta release with Cargo:
 
 ```bash
-cargo install data-courier --version 0.1.0-beta.3
+cargo install data-courier --version 0.1.0-beta.4
 ```
 
 This installs the `courier` binary.

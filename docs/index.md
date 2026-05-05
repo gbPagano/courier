@@ -31,4 +31,4 @@ hide:
 
 ## Project status
 
-Courier is at **v0.1.0-beta.3**. Treat the public API, configuration schema, and on-disk formats (including the dead-letter file format) as provisional. Breaking changes will be called out in the [contributing guide](contributing/contribute/) and release notes.
+Courier is at **v0.1.0-beta.4**. Treat the public API, configuration schema, and on-disk formats (including the dead-letter file format) as provisional. Breaking changes will be called out in the [contributing guide](contributing/contribute/) and release notes.
