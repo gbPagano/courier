@@ -5,9 +5,9 @@ edition = "2024"
 authors = ["gbPagano <guilhermebpagano@gmail.com>"]
 license = "MPL-2.0"
 description = "Async Rust framework for composable data pipelines"
-documentation = "https://gbpagano.github.io/courier/"
+documentation = "https://courier.gbpagano.dev/"
 readme = "README.md"
-homepage = "https://gbpagano.github.io/courier/"
+homepage = "https://courier.gbpagano.dev/"
 repository = "https://github.com/gbPagano/courier"
 exclude = [
     "/.github/",

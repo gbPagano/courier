@@ -2,7 +2,7 @@
 
 [![Status: Beta](https://img.shields.io/badge/status-beta-orange.svg)](https://github.com/gbPagano/courier)
 [![CI](https://github.com/gbPagano/courier/actions/workflows/ci.yml/badge.svg)](https://github.com/gbPagano/courier/actions/workflows/ci.yml)
-[![Docs](https://img.shields.io/badge/docs-gbpagano.github.io%2Fcourier-blue.svg)](https://gbpagano.github.io/courier/)
+[![Docs](https://img.shields.io/badge/docs-courier.gbpagano.dev-blue.svg)](https://courier.gbpagano.dev/)
 
 Async Rust framework for composable data pipelines:
 
@@ -14,16 +14,16 @@ Each stage runs as its own Tokio task and communicates through bounded `tokio::m
 
 ## Documentation
 
-Full documentation lives at **<https://gbpagano.github.io/courier/>**.
+Full documentation lives at **<https://courier.gbpagano.dev/>**.
 
 Jump in:
 
-- [Quickstart](https://gbpagano.github.io/courier/getting-started/quickstart/) — first pipeline in a few minutes
-- [Configuration](https://gbpagano.github.io/courier/configuration/) — `config.toml` reference
-- [Components](https://gbpagano.github.io/courier/components/) — built-in sources, transforms, sinks
-- [Scripting](https://gbpagano.github.io/courier/scripting/) — Rhai, Lua, and Python transforms
-- [Architecture](https://gbpagano.github.io/courier/architecture/) — internals and design
-- [Observability](https://gbpagano.github.io/courier/concepts/observability/) — logs, metrics, and traces over OTLP (sample [Collector config](examples/otel-collector.yaml), [Compose stack](examples/docker-compose.observability.yml), and [Grafana dashboard](examples/dashboards/courier.json))
+- [Quickstart](https://courier.gbpagano.dev/getting-started/quickstart/) — first pipeline in a few minutes
+- [Configuration](https://courier.gbpagano.dev/configuration/) — `config.toml` reference
+- [Components](https://courier.gbpagano.dev/components/) — built-in sources, transforms, sinks
+- [Scripting](https://courier.gbpagano.dev/scripting/) — Rhai, Lua, and Python transforms
+- [Architecture](https://courier.gbpagano.dev/architecture/) — internals and design
+- [Observability](https://courier.gbpagano.dev/concepts/observability/) — logs, metrics, and traces over OTLP (sample [Collector config](examples/otel-collector.yaml), [Compose stack](examples/docker-compose.observability.yml), and [Grafana dashboard](examples/dashboards/courier.json))
 
 ## Install
 
@@ -31,7 +31,7 @@ Jump in:
 cargo install data-courier --version 0.1.0-beta.4
 ```
 
-This installs the `courier` binary. See the [installation guide](https://gbpagano.github.io/courier/getting-started/installation/) for prerequisites (Rust toolchain, C toolchain for `rdkafka`, optional `python3` for the Python script transform) and build-from-source instructions.
+This installs the `courier` binary. See the [installation guide](https://courier.gbpagano.dev/getting-started/installation/) for prerequisites (Rust toolchain, C toolchain for `rdkafka`, optional `python3` for the Python script transform) and build-from-source instructions.
 
 ## Quick example
 
@@ -60,4 +60,4 @@ Pipelines are loaded at runtime from `config.toml` (override with `COURIER_CONFI
 
 ## Contributing
 
-See the [contributing guide](https://gbpagano.github.io/courier/contributing/contribute/).
+See the [contributing guide](https://courier.gbpagano.dev/contributing/contribute/).
