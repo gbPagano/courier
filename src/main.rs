@@ -22,16 +22,12 @@ async fn main() -> ExitCode {
     let default_log_level = match &cli.command {
         CliCommand::Run { .. } => "info",
         CliCommand::Validate { .. } | CliCommand::ListComponents => "off",
+        CliCommand::ReplayDlq { .. } => "info",
     };
 
     match cli.command {
         CliCommand::Run { config } => {
             let path = cli::resolve_config_path(config);
-            // Load the config before installing the subscriber so the
-            // user's `[observability]` block can drive logging from the
-            // first emitted event. Config-load errors happen pre-logger
-            // and go straight to stderr — same surface as the previous
-            // `eprintln!` in the validate path.
             let cfg = match Config::load(&path) {
                 Ok(cfg) => cfg,
                 Err(err) => {
@@ -95,6 +91,50 @@ async fn main() -> ExitCode {
                     ExitCode::FAILURE
                 }
             }
+        }
+        CliCommand::ReplayDlq { dlq_path, config } => {
+            if let Err(err) = cli::validate_dlq_path(&dlq_path) {
+                eprintln!("invalid dead-letter path: {err:#}");
+                return ExitCode::FAILURE;
+            }
+            let path = cli::resolve_config_path(config);
+            let cfg = match Config::load(&path) {
+                Ok(cfg) => cfg,
+                Err(err) => {
+                    eprintln!("failed to load config from {}: {err:#}", path.display());
+                    return ExitCode::FAILURE;
+                }
+            };
+            if let Err(err) = cfg.validate() {
+                eprintln!("configuration invalid: {err:#}");
+                return ExitCode::FAILURE;
+            }
+            if let Err(err) = courier::observability::init_from_config(
+                cfg.observability.as_ref(),
+                default_log_level,
+            ) {
+                eprintln!("failed to initialize observability: {err:#}");
+                return ExitCode::FAILURE;
+            }
+
+            let registry = match Registry::with_builtins() {
+                Ok(r) => r,
+                Err(err) => {
+                    tracing::error!("failed to initialize registry: {err:#}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let courier = match cli::build_replay_runtime(cfg, &dlq_path, registry) {
+                Ok(courier) => courier,
+                Err(err) => {
+                    tracing::error!("failed to start replay: {err:#}");
+                    return ExitCode::FAILURE;
+                }
+            };
+
+            tracing::info!("replaying dead-letter entries from {}", dlq_path.display());
+            courier.run().await;
+            ExitCode::SUCCESS
         }
     }
 }

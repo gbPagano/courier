@@ -7,6 +7,7 @@ use crate::observability::NodeCtx;
 
 pub mod api;
 pub mod http_webhook;
+pub mod jsonl_file;
 pub mod kafka;
 mod retry;
 pub mod sql;

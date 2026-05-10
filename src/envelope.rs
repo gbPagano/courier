@@ -41,11 +41,34 @@ impl Envelope {
     }
 }
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// A dead-letter entry written to a JSONL file when a sink exhausts its
+/// retry budget with `ExhaustedPolicy::DeadLetter`.
+///
+/// The `envelope` field round-trips through `Envelope`'s serde impl
+/// without manual transformation, so a `jsonl_file` source (or any
+/// replay tool) can deserialize a line directly and extract a valid
+/// `Envelope`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeadLetterEntry {
+    /// The envelope that failed to write.
+    pub envelope: Envelope,
+    /// Human-readable summary of the last error.
+    pub error: String,
+    /// Pipeline that produced the dead letter (e.g. `"my-pipeline"`).
+    pub pipeline: String,
+    /// Sink node id that produced the dead letter (e.g. `"my-pipeline/sink0"`).
+    pub sink: String,
+    /// Epoch millis when the dead-letter entry was written.
+    pub dead_lettered_at_ms: u64,
+    /// Total number of write attempts before the dead letter was written.
+    pub attempts: u32,
 }
 
 #[cfg(test)]

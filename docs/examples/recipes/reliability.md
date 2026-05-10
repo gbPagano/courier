@@ -63,4 +63,22 @@ kind = "dead_letter"
 path = "./dlq.jsonl"
 ```
 
-Use `dead_letter` when an operator needs to inspect or replay failed envelopes later.
+Use `dead_letter` when an operator needs to inspect failed envelopes. Re-ingest them later using `courier replay-dlq ./dlq.jsonl -c config.toml`, which strips transforms (envelopes have already been transformed), routes entries only to the sink that originally failed, and neutralizes any dead-letter path that would write back into the replay source file.
+
+The `jsonl_file` source can also be used directly in a pipeline config for more control over replay:
+
+```toml
+[[pipelines]]
+name = "replay"
+
+[pipelines.source]
+type = "jsonl_file"
+path = "./dlq.jsonl"
+
+[[pipelines.sinks]]
+type = "kafka"
+brokers = "localhost:9092"
+topic = "topic1"
+```
+
+Each dead-letter line contains the full envelope alongside routing metadata (`pipeline`, `sink`), a timestamp (`dead_lettered_at_ms`), and the retry count (`attempts`), so operators can filter and route entries before replay.

@@ -91,7 +91,82 @@ Once retries are exhausted, `on_exhausted` decides the fate of the envelope:
 
     The failed envelope is appended to `path` as a single JSON line, then the pipeline continues. If the dead-letter write itself fails, the original error is propagated as if `kind = "propagate"` had been configured.
 
-The dead-letter file format is one JSON envelope per line; treat it as provisional until Courier reaches 1.0.
+Each dead-letter line is a JSON object with the following structure:
+
+```json
+{
+  "envelope": {
+    "meta": {
+      "key": "some-key",
+      "source_id": "my-pipeline/src",
+      "timestamp_ms": 1715234567890,
+      "headers": {}
+    },
+    "payload": { "x": 1 }
+  },
+  "error": "HTTP error: 500 Internal Server Error",
+  "pipeline": "my-pipeline",
+  "sink": "my-pipeline/sink0",
+  "dead_lettered_at_ms": 1715234568000,
+  "attempts": 3
+}
+```
+
+The `envelope` field round-trips through `Envelope`'s serde serialization, so tools that replay dead-letter files can deserialize each line and extract a valid `Envelope` without manual transformation. The `pipeline` and `sink` fields identify the origin of the dead letter for multi-pipeline routing. `dead_lettered_at_ms` records when the entry was written. `attempts` is the total number of write attempts before the dead letter was created.
+
+### Replaying dead-letter entries
+
+Use the `jsonl_file` source to re-ingest envelopes from a dead-letter file:
+
+```toml
+[[pipelines]]
+name = "replay"
+
+[pipelines.source]
+type = "jsonl_file"
+path = "./dlq.jsonl"
+
+[[pipelines.sinks]]
+type = "kafka"
+brokers = "localhost:9092"
+topic = "topic1"
+```
+
+`jsonl_file` source config fields:
+
+| Field | Required | Description |
+|---|---|---|
+| `path` | Yes | Path to the JSONL file. Must exist at build time. |
+| `emit_interval_ms` | No | Milliseconds to wait between each emitted line. Useful for rate-limiting replay against a slow sink. Must be greater than 0 if set. |
+| `dead_letter_pipeline` | No | When set, only lines whose `pipeline` field matches this value are emitted; bare envelopes (no `pipeline` annotation) are also emitted, unless a sink filter is active (see below). |
+| `dead_letter_sink` | No | When set, only lines whose `sink` field matches this value are emitted. Used to split a multi-sink replay so each sink only receives its own failed envelopes. |
+
+!!! warning "Prefer `replay-dlq` over manual `jsonl_file` configuration"
+    Manually wiring a `jsonl_file` source works for simple cases, but has pitfalls that `replay-dlq` handles automatically:
+
+    - **No pipeline filtering** — without `dead_letter_pipeline`, entries from every pipeline are emitted to the sink, including entries intended for other pipelines.
+    - **No sink filtering** — if the original pipeline fans out to multiple sinks, every sink receives every entry, including entries that already succeeded at sibling sinks.
+    - **Transforms re-execute** — envelopes in a DLQ have already passed through the transform chain. Running them through transforms again can produce incorrect or duplicated data, especially for non-idempotent transforms.
+    - **Infinite loop risk** — if the sink has `on_exhausted = { kind = "dead_letter", path = "./dlq.jsonl" }` pointing at the same file the source is reading, failed writes append back into the replay source, creating an infinite loop. `replay-dlq` detects this and switches the sink to `propagate`.
+
+    Use manual `jsonl_file` configuration only when you need explicit control — for example, to add specific transforms during replay, or to route DLQ entries to different sinks.
+
+Or use the CLI:
+
+```
+courier replay-dlq ./dlq.jsonl -c config.toml
+```
+
+This replaces every pipeline's source with a `jsonl_file` source reading from the given path and runs until all entries have been emitted. `replay-dlq` also:
+
+- **Strips transforms** from each pipeline, since envelopes captured by the sink have already been through the transform chain. Re-running non-idempotent transforms would produce incorrect or duplicated data.
+- **Filters sinks** to only the sink that produced each DLQ entry (determined from the `sink` field). If the original pipeline fans out to multiple sinks and only one failed, replay sends entries only to the failed sink instead of duplicating them into sibling sinks that already succeeded.
+- **Neutralizes dead-letter paths** that would write back into the replay source file. If a sink's `on_exhausted` targets the same file being replayed, it is switched to `propagate` so replay failures surface as errors instead of creating an infinite loop.
+
+!!! note "Bare entries and multi-sink replay"
+    When `courier replay-dlq` splits a pipeline that originally fanned out to multiple sinks, each replay pipeline uses a per-sink filter to prevent cross-contamination. Bare-envelope entries that carry no `pipeline` annotation are **dropped with a warning** in that case, because the source cannot determine which sink they were intended for.
+
+    When the DLQ file contains **any** unattributed lines (bare envelopes), `replay-dlq` keeps all sinks in the pipeline and omits per-sink filtering so those lines can be replayed. In this mode, attributed entries are still filtered to the matching pipeline, but all entries are delivered to every sink — meaning each sink receives both its own entries and entries intended for sibling sinks. If this is undesirable, remove bare-envelope lines from the DLQ file before replaying.
 
 ## Defaults
 
@@ -126,6 +201,6 @@ In directory mode (`COURIER_CONFIG=./conf.d`) defaults are **per file**: each fi
 
 ## Choosing a strategy
 
-- For idempotent sinks, prefer `dead_letter` with a generous `max_attempts` — transient blips will retry, and persistent failures land in a file you can inspect or replay.
+- For idempotent sinks, prefer `dead_letter` with a generous `max_attempts` — transient blips will retry, and persistent failures land in a file you can inspect. Use the `jsonl_file` source or `courier replay-dlq` to re-ingest dead-lettered envelopes.
 - For pipelines where any data loss is unacceptable, set `on_error = "fail_pipeline"` and let your supervisor (systemd, Kubernetes, etc.) restart the binary.
 - For transforms where the failure mode is "this one envelope is malformed", `on_error = "drop"` is usually right.

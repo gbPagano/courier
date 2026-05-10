@@ -288,6 +288,10 @@ pub fn register_builtin(registry: &mut Registry) -> Result<()> {
         "http_webhook",
         crate::sources::http_webhook::http_webhook_source_factory,
     )?;
+    registry.register_source(
+        "jsonl_file",
+        crate::sources::jsonl_file::jsonl_file_source_factory,
+    )?;
     registry.register_source("kafka", crate::sources::kafka::kafka_source_factory)?;
     registry.register_source(
         "sql_query_poll",
@@ -542,7 +546,13 @@ mod tests {
         sources.sort();
         assert_eq!(
             sources,
-            vec!["api_poll", "http_webhook", "kafka", "sql_query_poll"]
+            vec![
+                "api_poll",
+                "http_webhook",
+                "jsonl_file",
+                "kafka",
+                "sql_query_poll"
+            ]
         );
 
         let mut transforms: Vec<_> = registry.transform_kinds().collect();

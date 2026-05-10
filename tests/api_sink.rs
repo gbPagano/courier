@@ -289,8 +289,12 @@ async fn api_sink_dead_letters_after_retry_exhaustion() {
 
     let contents = std::fs::read_to_string(&dlq).expect("dead-letter file should exist");
     let entry: Value = serde_json::from_str(contents.trim()).unwrap();
-    assert_eq!(entry["payload"], json!({ "id": "abc" }));
+    assert_eq!(entry["envelope"]["payload"], json!({ "id": "abc" }));
     assert!(entry["error"].as_str().unwrap().contains("500"), "{entry}");
+    assert_eq!(entry["pipeline"].as_str().unwrap(), "dlq");
+    assert!(entry["sink"].as_str().unwrap().contains("sink"));
+    assert!(entry["dead_lettered_at_ms"].as_u64().unwrap() > 0);
+    assert_eq!(entry["attempts"], 2);
 }
 
 #[tokio::test]

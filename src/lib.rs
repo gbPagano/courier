@@ -22,6 +22,7 @@ pub mod sinks;
 pub mod sources;
 pub mod transforms;
 
+pub use envelope::{DeadLetterEntry, Envelope, Meta};
 pub use registry::{Registry, register_builtin};
 pub use retry::{ExhaustedPolicy, RetryPolicy};
 pub use sinks::ManagedSink;

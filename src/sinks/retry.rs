@@ -3,7 +3,7 @@ use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::{redact_secret, redact_secret_path};
-use crate::envelope::Envelope;
+use crate::envelope::{DeadLetterEntry, Envelope};
 use crate::observability::NodeCtx;
 use crate::retry::{ExhaustedPolicy, RetryPolicy};
 use crate::sinks::WriteOne;
@@ -37,7 +37,15 @@ pub(crate) async fn write_with_retry<W: WriteOne>(
         match inner.write(env).await {
             Ok(()) => return Ok(WriteOutcome::Written),
             Err(e) if attempt + 1 == policy.max_attempts => {
-                return on_exhausted(inner.id(), env, e, &policy.on_exhausted, ctx).await;
+                return on_exhausted(
+                    inner.id(),
+                    env,
+                    e,
+                    &policy.on_exhausted,
+                    ctx,
+                    policy.max_attempts,
+                )
+                .await;
             }
             Err(e) => {
                 let delay = policy.delay_for(attempt);
@@ -66,18 +74,19 @@ async fn on_exhausted(
     err: anyhow::Error,
     policy: &ExhaustedPolicy,
     ctx: &NodeCtx,
+    attempts: u32,
 ) -> Result<WriteOutcome> {
     match policy {
         ExhaustedPolicy::Propagate => Err(err),
         ExhaustedPolicy::DeadLetter { path } => {
-            let entry = serde_json::json!({
-                "timestamp_ms": env.meta.timestamp_ms,
-                "source_id": env.meta.source_id,
-                "key": env.meta.key,
-                "headers": env.meta.headers,
-                "payload": env.payload,
-                "error": format!("{err:#}"),
-            });
+            let entry = DeadLetterEntry {
+                envelope: env.clone(),
+                error: format!("{err:#}"),
+                pipeline: ctx.pipeline().to_string(),
+                sink: ctx.node_id().to_string(),
+                dead_lettered_at_ms: crate::envelope::now_ms(),
+                attempts,
+            };
             let mut line = serde_json::to_string(&entry)?;
             line.push('\n');
 
@@ -294,16 +303,50 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 2);
 
         let contents = std::fs::read_to_string(&path).unwrap();
-        let entry: serde_json::Value = serde_json::from_str(contents.trim()).unwrap();
-        assert_eq!(entry["source_id"], "src");
-        assert_eq!(entry["key"], "k1");
-        assert_eq!(entry["payload"]["x"], 1);
+        let entry: crate::envelope::DeadLetterEntry =
+            serde_json::from_str(contents.trim()).unwrap();
+        assert_eq!(entry.envelope.meta.source_id, "src");
+        assert_eq!(entry.envelope.meta.key, Some("k1".into()));
+        assert_eq!(entry.envelope.payload, json!({"x": 1}));
         assert!(
-            entry["error"]
-                .as_str()
-                .unwrap()
-                .contains("simulated failure")
+            entry.error.contains("simulated failure"),
+            "expected 'simulated failure' in error, got: {}",
+            entry.error
         );
+        assert_eq!(entry.attempts, 2);
+        assert_eq!(entry.pipeline, "");
+        assert_eq!(entry.sink, "");
+        assert!(entry.dead_lettered_at_ms > 0);
+    }
+
+    #[tokio::test]
+    async fn dead_letters_includes_routing_metadata() {
+        let (handle, _exporter) = obs_handle_in_memory();
+        let ctx = NodeCtx::for_node(
+            "my-pipeline",
+            "my-pipeline/sink0",
+            NodeKind::Sink,
+            handle.clone(),
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dead.jsonl");
+        let (w, _) = writer(5);
+        let policy = fast_policy(1, ExhaustedPolicy::DeadLetter { path: path.clone() });
+        let env = Envelope::new("src", json!({"data": 42}));
+        let cancel = CancellationToken::new();
+
+        write_with_retry(&w, &env, &policy, &ctx, &cancel)
+            .await
+            .unwrap();
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let entry: crate::envelope::DeadLetterEntry =
+            serde_json::from_str(contents.trim()).unwrap();
+        assert_eq!(entry.pipeline, "my-pipeline");
+        assert_eq!(entry.sink, "my-pipeline/sink0");
+        assert!(entry.dead_lettered_at_ms > 0);
+        assert_eq!(entry.attempts, 1);
+        assert_eq!(entry.envelope.payload, json!({"data": 42}));
     }
 
     #[tokio::test]
