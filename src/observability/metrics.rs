@@ -18,6 +18,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use opentelemetry::KeyValue;
+
+use crate::lifecycle::PipelineStatus;
 use opentelemetry::metrics::{Counter, Histogram, InstrumentProvider, Meter, MeterProvider};
 use opentelemetry_otlp::{MetricExporter, WithExportConfig};
 use opentelemetry_sdk::Resource;
@@ -195,6 +197,11 @@ pub struct NodeCtx {
     node_id: Arc<str>,
     node_kind: NodeKind,
     log_keys: bool,
+    /// Attached by `spawn_pipeline` via `with_pipeline_status`; always `Some`
+    /// at runtime. `None` only in unit tests that construct `NodeCtx::noop()`
+    /// directly without going through `spawn_pipeline`, in which case
+    /// `mark_pipeline_failed()` is a no-op.
+    pipeline_status: Option<Arc<PipelineStatus>>,
 }
 
 impl NodeCtx {
@@ -218,6 +225,24 @@ impl NodeCtx {
             node_id: Arc::from(node_id),
             node_kind,
             log_keys,
+            pipeline_status: None,
+        }
+    }
+
+    /// Attach the pipeline status so `mark_pipeline_failed` can transition
+    /// both the failure flag and the visible state to `Failed`.
+    pub fn with_pipeline_status(mut self, status: Arc<PipelineStatus>) -> Self {
+        self.pipeline_status = Some(status);
+        self
+    }
+
+    /// Mark this pipeline as failed due to an unrecoverable error
+    /// (`FailPipeline` policy). Sets state to `Failed` and raises the failure
+    /// flag so the health probe and exit code both reflect the error.
+    /// No-op when no status is attached (e.g. tests or no-op contexts).
+    pub fn mark_pipeline_failed(&self) {
+        if let Some(status) = &self.pipeline_status {
+            status.mark_failed();
         }
     }
 
@@ -233,6 +258,7 @@ impl NodeCtx {
             node_id: Arc::from(""),
             node_kind: NodeKind::Transform,
             log_keys: false,
+            pipeline_status: None,
         }
     }
 

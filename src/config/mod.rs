@@ -11,8 +11,8 @@ pub use observability::{LogFormat, LogsConfig, MetricsConfig, ObservabilityConfi
 pub use parse::parse_config;
 pub use redact::{redact_secret, redact_secret_path};
 pub use types::{
-    Config, ErrorPolicyConfig, FanOutPolicyConfig, PipelineSpec, SinkSpec, SourceSpec,
-    TransformSpec,
+    Config, ErrorPolicyConfig, FanOutPolicyConfig, HealthConfig, PipelineSpec, ShutdownConfig,
+    SinkSpec, SourceSpec, TransformSpec,
 };
 
 #[cfg(test)]

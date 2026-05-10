@@ -2,6 +2,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use courier::Registry;
+use courier::RunOutcome;
 use courier::cli::{self, Cli, CliCommand};
 use courier::config::Config;
 
@@ -47,7 +48,18 @@ async fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
 
-            let courier = match cli::build_runtime_from_config(cfg, &path) {
+            // Config::validate() already checked that health.address parses.
+            let health_address: Option<std::net::SocketAddr> = cfg
+                .health
+                .as_ref()
+                .map(|h| h.address.parse().expect("address was validated"));
+            let shutdown_timeout = cfg
+                .shutdown
+                .as_ref()
+                .map(|s| std::time::Duration::from_secs(s.timeout_secs))
+                .unwrap_or(std::time::Duration::from_secs(30));
+
+            let mut courier = match cli::build_runtime_from_config(cfg, &path) {
                 Ok(courier) => courier,
                 Err(err) => {
                     tracing::error!("failed to start courier: {err:#}");
@@ -55,9 +67,19 @@ async fn main() -> ExitCode {
                 }
             };
 
+            courier = courier
+                .with_shutdown_timeout(shutdown_timeout)
+                .with_health_address(health_address);
+
             tracing::info!("loaded pipeline config from {}", path.display());
-            courier.run().await;
-            ExitCode::SUCCESS
+            let outcome = courier.run().await;
+            match outcome {
+                RunOutcome::Success => ExitCode::SUCCESS,
+                RunOutcome::Failed => {
+                    tracing::error!("one or more pipelines failed");
+                    ExitCode::FAILURE
+                }
+            }
         }
         CliCommand::Validate { config } => {
             if let Err(err) = courier::observability::init_default_logging(default_log_level) {
@@ -133,8 +155,14 @@ async fn main() -> ExitCode {
             };
 
             tracing::info!("replaying dead-letter entries from {}", dlq_path.display());
-            courier.run().await;
-            ExitCode::SUCCESS
+            let outcome = courier.run().await;
+            match outcome {
+                RunOutcome::Success => ExitCode::SUCCESS,
+                RunOutcome::Failed => {
+                    tracing::error!("replay pipeline failed");
+                    ExitCode::FAILURE
+                }
+            }
         }
     }
 }

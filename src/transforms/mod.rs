@@ -134,6 +134,7 @@ impl<M: MapOne + 'static> Transform for BasicTransform<M> {
                                 }
                                 ErrorPolicy::FailPipeline => {
                                     tracing::error!(node_id = %redact_secret(&id), error = %e, "map failed, failing pipeline");
+                                    ctx.mark_pipeline_failed();
                                     cancel.cancel();
                                     break;
                                 }

@@ -7,10 +7,36 @@ use crate::retry::RetryPolicy;
 
 use super::redact::{RedactedJsonValue, RedactedOptionRetryPolicy, RedactedStr};
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HealthConfig {
+    pub address: String,
+}
+
+impl Default for HealthConfig {
+    fn default() -> Self {
+        Self {
+            address: "0.0.0.0:9090".into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShutdownConfig {
+    pub timeout_secs: u64,
+}
+
+impl Default for ShutdownConfig {
+    fn default() -> Self {
+        Self { timeout_secs: 30 }
+    }
+}
+
 #[derive(Clone, Default, PartialEq)]
 pub struct Config {
     pub pipelines: Vec<PipelineSpec>,
     pub observability: Option<super::observability::ObservabilityConfig>,
+    pub health: Option<HealthConfig>,
+    pub shutdown: Option<ShutdownConfig>,
 }
 
 impl fmt::Debug for Config {
@@ -18,6 +44,8 @@ impl fmt::Debug for Config {
         f.debug_struct("Config")
             .field("pipelines", &self.pipelines)
             .field("observability", &self.observability)
+            .field("health", &self.health)
+            .field("shutdown", &self.shutdown)
             .finish()
     }
 }

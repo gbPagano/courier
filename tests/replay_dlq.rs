@@ -65,6 +65,8 @@ async fn replay_delivers_dlq_envelopes_to_sink() {
 
     let config = Config {
         observability: None,
+        health: None,
+        shutdown: None,
         pipelines: vec![pipeline_config(
             "p",
             out_path.to_str().unwrap(),
@@ -75,7 +77,7 @@ async fn replay_delivers_dlq_envelopes_to_sink() {
     let courier =
         build_replay_runtime(config, &dlq_path, Registry::with_builtins().unwrap()).unwrap();
 
-    let handles = courier.spawn(CancellationToken::new());
+    let (handles, _state) = courier.spawn(CancellationToken::new());
     tokio::time::timeout(Duration::from_secs(5), join_all(handles))
         .await
         .expect("replay did not complete within 5 s");
@@ -107,6 +109,8 @@ async fn replay_filters_entries_by_pipeline_in_multi_pipeline_config() {
 
     let config = Config {
         observability: None,
+        health: None,
+        shutdown: None,
         pipelines: vec![
             pipeline_config("a", out_a.to_str().unwrap(), placeholder_source()),
             pipeline_config("b", out_b.to_str().unwrap(), placeholder_source()),
@@ -116,7 +120,7 @@ async fn replay_filters_entries_by_pipeline_in_multi_pipeline_config() {
     let courier =
         build_replay_runtime(config, &dlq_path, Registry::with_builtins().unwrap()).unwrap();
 
-    let handles = courier.spawn(CancellationToken::new());
+    let (handles, _state) = courier.spawn(CancellationToken::new());
     tokio::time::timeout(Duration::from_secs(5), join_all(handles))
         .await
         .expect("replay did not complete within 5 s");
@@ -156,6 +160,8 @@ async fn replay_splits_multi_sink_pipeline_per_sink() {
 
     let config = Config {
         observability: None,
+        health: None,
+        shutdown: None,
         pipelines: vec![PipelineSpec {
             name: "p".into(),
             source: placeholder_source(),
@@ -182,7 +188,7 @@ async fn replay_splits_multi_sink_pipeline_per_sink() {
     let courier =
         build_replay_runtime(config, &dlq_path, Registry::with_builtins().unwrap()).unwrap();
 
-    let handles = courier.spawn(CancellationToken::new());
+    let (handles, _state) = courier.spawn(CancellationToken::new());
     tokio::time::timeout(Duration::from_secs(5), join_all(handles))
         .await
         .expect("replay did not complete within 5 s");

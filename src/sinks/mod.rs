@@ -153,6 +153,7 @@ impl<W: WriteOne + 'static> Sink for ManagedSink<W> {
                                 }
                                 ErrorPolicy::FailPipeline => {
                                     tracing::error!(node_id = %redact_secret(&id), error = %e, "write failed, failing pipeline");
+                                    ctx.mark_pipeline_failed();
                                     cancel.cancel();
                                     break;
                                 }

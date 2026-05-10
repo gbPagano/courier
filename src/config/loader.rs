@@ -35,15 +35,21 @@ impl Config {
         let mut merged = Config {
             pipelines: Vec::new(),
             observability: None,
+            health: None,
+            shutdown: None,
         };
         let mut seen_names: std::collections::HashMap<String, PathBuf> =
             std::collections::HashMap::new();
         let mut observability_file: Option<PathBuf> = None;
+        let mut health_file: Option<PathBuf> = None;
+        let mut shutdown_file: Option<PathBuf> = None;
 
         for file in files {
             let Config {
                 pipelines,
                 observability,
+                health,
+                shutdown,
             } = Self::load_file(&file)?;
 
             if let Some(observability) = observability {
@@ -55,6 +61,28 @@ impl Config {
                     );
                 }
                 merged.observability = Some(observability);
+            }
+
+            if let Some(health) = health {
+                if let Some(prev) = health_file.replace(file.clone()) {
+                    anyhow::bail!(
+                        "duplicate health config in {} (also defined in {})",
+                        file.display(),
+                        prev.display(),
+                    );
+                }
+                merged.health = Some(health);
+            }
+
+            if let Some(shutdown) = shutdown {
+                if let Some(prev) = shutdown_file.replace(file.clone()) {
+                    anyhow::bail!(
+                        "duplicate shutdown config in {} (also defined in {})",
+                        file.display(),
+                        prev.display(),
+                    );
+                }
+                merged.shutdown = Some(shutdown);
             }
 
             for pipeline in pipelines {
@@ -432,6 +460,123 @@ mod tests {
         );
         assert_eq!(obs.tracing.sample_ratio, 0.25);
         assert_eq!(obs.service_name, "courier-prod");
+    }
+
+    #[test]
+    fn directory_mode_preserves_health_and_shutdown_config() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("a.toml"),
+            r#"
+            [health]
+            address = "0.0.0.0:9090"
+
+            [shutdown]
+            timeout_secs = 45
+
+            [[pipelines]]
+            name = "p1"
+            [pipelines.source]
+            type = "noop"
+            [[pipelines.sinks]]
+            type = "noop"
+            "#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("b.toml"),
+            r#"
+            [[pipelines]]
+            name = "p2"
+            [pipelines.source]
+            type = "noop"
+            [[pipelines.sinks]]
+            type = "noop"
+            "#,
+        )
+        .unwrap();
+
+        let config = Config::load(dir.path()).unwrap();
+        assert_eq!(config.pipelines.len(), 2);
+        assert_eq!(config.health.unwrap().address, "0.0.0.0:9090");
+        assert_eq!(config.shutdown.unwrap().timeout_secs, 45);
+    }
+
+    #[test]
+    fn directory_mode_rejects_duplicate_health_blocks() {
+        let dir = tempfile::tempdir().unwrap();
+        let health_block = r#"
+            [health]
+            address = "0.0.0.0:9090"
+
+            [[pipelines]]
+            name = "p"
+            [pipelines.source]
+            type = "noop"
+            [[pipelines.sinks]]
+            type = "noop"
+        "#;
+        std::fs::write(dir.path().join("a.toml"), health_block).unwrap();
+        std::fs::write(
+            dir.path().join("b.toml"),
+            r#"
+            [health]
+            address = "0.0.0.0:9091"
+
+            [[pipelines]]
+            name = "q"
+            [pipelines.source]
+            type = "noop"
+            [[pipelines.sinks]]
+            type = "noop"
+            "#,
+        )
+        .unwrap();
+
+        let msg = format!("{:#}", Config::load(dir.path()).unwrap_err());
+        assert!(msg.contains("duplicate health config"), "{msg}");
+        assert!(msg.contains("a.toml"), "{msg}");
+        assert!(msg.contains("b.toml"), "{msg}");
+    }
+
+    #[test]
+    fn directory_mode_rejects_duplicate_shutdown_blocks() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("a.toml"),
+            r#"
+            [shutdown]
+            timeout_secs = 10
+
+            [[pipelines]]
+            name = "p"
+            [pipelines.source]
+            type = "noop"
+            [[pipelines.sinks]]
+            type = "noop"
+            "#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("b.toml"),
+            r#"
+            [shutdown]
+            timeout_secs = 20
+
+            [[pipelines]]
+            name = "q"
+            [pipelines.source]
+            type = "noop"
+            [[pipelines.sinks]]
+            type = "noop"
+            "#,
+        )
+        .unwrap();
+
+        let msg = format!("{:#}", Config::load(dir.path()).unwrap_err());
+        assert!(msg.contains("duplicate shutdown config"), "{msg}");
+        assert!(msg.contains("a.toml"), "{msg}");
+        assert!(msg.contains("b.toml"), "{msg}");
     }
 
     #[test]

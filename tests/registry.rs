@@ -119,6 +119,8 @@ async fn end_to_end_pipeline_built_through_registry() {
     let courier = registry
         .build_courier(Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "p".into(),
                 source: SourceSpec {
@@ -148,7 +150,7 @@ async fn end_to_end_pipeline_built_through_registry() {
         })
         .unwrap();
 
-    let handles = courier.spawn(CancellationToken::new());
+    let (handles, _state) = courier.spawn(CancellationToken::new());
     join_all(handles).await;
 
     let collected = capture.get("p/sink0");
@@ -173,6 +175,8 @@ async fn built_in_script_transform_runs_through_registry() {
     let courier = registry
         .build_courier(Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "scripted".into(),
                 source: SourceSpec {
@@ -207,7 +211,7 @@ async fn built_in_script_transform_runs_through_registry() {
         })
         .unwrap();
 
-    let handles = courier.spawn(CancellationToken::new());
+    let (handles, _state) = courier.spawn(CancellationToken::new());
     join_all(handles).await;
 
     let collected = capture.get("scripted/sink0");
@@ -230,6 +234,8 @@ async fn built_in_lua_script_transform_runs_through_registry() {
     let courier = registry
         .build_courier(Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "lua-scripted".into(),
                 source: SourceSpec {
@@ -264,7 +270,7 @@ async fn built_in_lua_script_transform_runs_through_registry() {
         })
         .unwrap();
 
-    let handles = courier.spawn(CancellationToken::new());
+    let (handles, _state) = courier.spawn(CancellationToken::new());
     join_all(handles).await;
 
     let collected = capture.get("lua-scripted/sink0");
@@ -287,6 +293,8 @@ async fn built_in_python_script_transform_runs_through_registry() {
     let courier = registry
         .build_courier(Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "python-scripted".into(),
                 source: SourceSpec {
@@ -316,7 +324,7 @@ async fn built_in_python_script_transform_runs_through_registry() {
         })
         .unwrap();
 
-    let handles = courier.spawn(CancellationToken::new());
+    let (handles, _state) = courier.spawn(CancellationToken::new());
     join_all(handles).await;
 
     let collected = capture.get("python-scripted/sink0");
@@ -339,6 +347,8 @@ async fn built_in_python_script_transform_supports_custom_entrypoint() {
     let courier = registry
         .build_courier(Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "python-custom-entrypoint".into(),
                 source: SourceSpec {
@@ -369,7 +379,7 @@ async fn built_in_python_script_transform_supports_custom_entrypoint() {
         })
         .unwrap();
 
-    let handles = courier.spawn(CancellationToken::new());
+    let (handles, _state) = courier.spawn(CancellationToken::new());
     join_all(handles).await;
 
     let collected = capture.get("python-custom-entrypoint/sink0");
@@ -392,6 +402,8 @@ async fn built_in_script_transform_requires_runtime() {
     let err = registry
         .build_courier(Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "missing-runtime".into(),
                 source: SourceSpec {
@@ -443,6 +455,8 @@ async fn built_in_lua_script_transform_rejects_rhai_limits() {
     let err = registry
         .build_courier(Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "lua-rhai-limits".into(),
                 source: SourceSpec {
@@ -492,6 +506,8 @@ async fn built_in_python_script_transform_rejects_rhai_limits() {
     let err = registry
         .build_courier(Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "python-rhai-limits".into(),
                 source: SourceSpec {
@@ -546,6 +562,8 @@ async fn registry_fan_out_to_multiple_sinks() {
     let courier = registry
         .build_courier(Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "fan".into(),
                 source: SourceSpec {
@@ -576,7 +594,7 @@ async fn registry_fan_out_to_multiple_sinks() {
         })
         .unwrap();
 
-    let handles = courier.spawn(CancellationToken::new());
+    let (handles, _state) = courier.spawn(CancellationToken::new());
     join_all(handles).await;
 
     let sink0 = capture.get("fan/sink0");
@@ -631,7 +649,7 @@ async fn broadcast_with_drop_parsed_from_toml_delivers_to_fast_sink() {
 
     let courier = registry.build_courier(config).unwrap();
     let cancel = tokio_util::sync::CancellationToken::new();
-    let handles = courier.spawn(cancel.clone());
+    let (handles, _state) = courier.spawn(cancel.clone());
 
     tokio::time::sleep(Duration::from_millis(100)).await;
     cancel.cancel();

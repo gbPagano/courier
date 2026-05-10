@@ -51,6 +51,8 @@ async fn pipeline_receives_http_post_as_envelope() {
     let courier = registry
         .build_courier(Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "incoming-events".into(),
                 source: SourceSpec {
@@ -75,7 +77,7 @@ async fn pipeline_receives_http_post_as_envelope() {
         .unwrap();
 
     let cancel = CancellationToken::new();
-    let handles = courier.spawn(cancel.clone());
+    let (handles, _state) = courier.spawn(cancel.clone());
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let response = reqwest::Client::new()
@@ -113,6 +115,8 @@ async fn invalid_webhook_requests_return_client_errors() {
     let courier = registry
         .build_courier(Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "incoming-events".into(),
                 source: SourceSpec {
@@ -137,7 +141,7 @@ async fn invalid_webhook_requests_return_client_errors() {
         .unwrap();
 
     let cancel = CancellationToken::new();
-    let handles = courier.spawn(cancel.clone());
+    let (handles, _state) = courier.spawn(cancel.clone());
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let client = reqwest::Client::new();

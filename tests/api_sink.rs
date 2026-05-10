@@ -69,6 +69,8 @@ async fn pipeline_posts_payload_via_api_sink() {
     let courier = registry()
         .build_courier(Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "to-webhook".into(),
                 source: SourceSpec {
@@ -93,7 +95,7 @@ async fn pipeline_posts_payload_via_api_sink() {
         })
         .unwrap();
 
-    let handles = courier.spawn(CancellationToken::new());
+    let (handles, _state) = courier.spawn(CancellationToken::new());
     join_all(handles).await;
 
     // Wiremock's `.expect(1)` is verified on Drop — server falls out of
@@ -117,6 +119,8 @@ async fn api_sink_sends_full_envelope_when_configured() {
     let courier = registry()
         .build_courier(Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "with-meta".into(),
                 source: SourceSpec {
@@ -140,7 +144,7 @@ async fn api_sink_sends_full_envelope_when_configured() {
         })
         .unwrap();
 
-    let handles = courier.spawn(CancellationToken::new());
+    let (handles, _state) = courier.spawn(CancellationToken::new());
     join_all(handles).await;
 }
 
@@ -159,6 +163,8 @@ async fn api_sink_forwards_custom_headers_and_method() {
     let courier = registry()
         .build_courier(Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "put".into(),
                 source: SourceSpec {
@@ -186,7 +192,7 @@ async fn api_sink_forwards_custom_headers_and_method() {
         })
         .unwrap();
 
-    let handles = courier.spawn(CancellationToken::new());
+    let (handles, _state) = courier.spawn(CancellationToken::new());
     join_all(handles).await;
 }
 
@@ -211,6 +217,8 @@ async fn api_sink_retries_then_succeeds_on_5xx() {
     let courier = registry()
         .build_courier(Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "with-retry".into(),
                 source: SourceSpec {
@@ -237,7 +245,7 @@ async fn api_sink_retries_then_succeeds_on_5xx() {
         })
         .unwrap();
 
-    let handles = courier.spawn(CancellationToken::new());
+    let (handles, _state) = courier.spawn(CancellationToken::new());
     join_all(handles).await;
 }
 
@@ -258,6 +266,8 @@ async fn api_sink_dead_letters_after_retry_exhaustion() {
     let courier = registry()
         .build_courier(Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "dlq".into(),
                 source: SourceSpec {
@@ -284,7 +294,7 @@ async fn api_sink_dead_letters_after_retry_exhaustion() {
         })
         .unwrap();
 
-    let handles = courier.spawn(CancellationToken::new());
+    let (handles, _state) = courier.spawn(CancellationToken::new());
     join_all(handles).await;
 
     let contents = std::fs::read_to_string(&dlq).expect("dead-letter file should exist");
@@ -333,6 +343,8 @@ async fn api_sink_drop_policy_continues_after_failure() {
     let courier = registry()
         .build_courier(Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "drop".into(),
                 source: SourceSpec {
@@ -353,7 +365,7 @@ async fn api_sink_drop_policy_continues_after_failure() {
         })
         .unwrap();
 
-    let handles = courier.spawn(CancellationToken::new());
+    let (handles, _state) = courier.spawn(CancellationToken::new());
     let _ = tokio::time::timeout(Duration::from_secs(5), join_all(handles))
         .await
         .expect("pipeline should finish");
@@ -381,6 +393,8 @@ async fn api_sink_writes_through_a_transform() {
     let courier = registry()
         .build_courier(Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "tx-then-api".into(),
                 source: SourceSpec {
@@ -413,7 +427,7 @@ async fn api_sink_writes_through_a_transform() {
         })
         .unwrap();
 
-    let handles = courier.spawn(CancellationToken::new());
+    let (handles, _state) = courier.spawn(CancellationToken::new());
     let _ = tokio::time::timeout(Duration::from_secs(5), join_all(handles))
         .await
         .expect("pipeline should finish");

@@ -13,8 +13,9 @@ use tokio::sync::mpsc::Sender;
 use tokio_util::sync::CancellationToken;
 
 use courier::Courier;
+use courier::RunOutcome;
 use courier::envelope::Envelope;
-use courier::pipeline::{FanOutPolicy, Pipeline};
+use courier::pipeline::{ErrorPolicy, FanOutPolicy, Pipeline};
 use courier::register_builtin;
 use courier::sinks::{ManagedSink, WriteOne};
 use courier::sources::Source;
@@ -53,7 +54,7 @@ async fn source_transform_sink_end_to_end() {
         ))))
         .with_sink(Box::new(ManagedSink::new(sink)));
 
-    let handles = Courier::new(vec![pipeline]).spawn(CancellationToken::new());
+    let (handles, _state) = Courier::new(vec![pipeline]).spawn(CancellationToken::new());
     join_all(handles).await;
 
     let collected = store.lock().unwrap();
@@ -77,7 +78,7 @@ async fn fan_out_to_multiple_sinks() {
         .with_sink(Box::new(ManagedSink::new(sink_a)))
         .with_sink(Box::new(ManagedSink::new(sink_b)));
 
-    let handles = Courier::new(vec![pipeline]).spawn(CancellationToken::new());
+    let (handles, _state) = Courier::new(vec![pipeline]).spawn(CancellationToken::new());
     join_all(handles).await;
 
     assert_eq!(store_a.lock().unwrap().len(), 5);
@@ -109,7 +110,7 @@ async fn transform_filter_drops_envelopes() {
         .with_transform(Box::new(BasicTransform::new(EvenOnly)))
         .with_sink(Box::new(ManagedSink::new(sink)));
 
-    let handles = Courier::new(vec![pipeline]).spawn(CancellationToken::new());
+    let (handles, _state) = Courier::new(vec![pipeline]).spawn(CancellationToken::new());
     join_all(handles).await;
 
     let collected = store.lock().unwrap();
@@ -148,7 +149,7 @@ async fn cancellation_stops_pipeline() {
         Pipeline::new("p", Box::new(InfiniteSource)).with_sink(Box::new(ManagedSink::new(sink)));
 
     let cancel = CancellationToken::new();
-    let handles = Courier::new(vec![pipeline]).spawn(cancel.clone());
+    let (handles, _state) = Courier::new(vec![pipeline]).spawn(cancel.clone());
 
     tokio::time::sleep(Duration::from_millis(50)).await;
     cancel.cancel();
@@ -210,7 +211,7 @@ async fn backpressure_blocks_source_on_full_channel() {
     .with_channel_capacity(4);
 
     let cancel = CancellationToken::new();
-    let handles = Courier::new(vec![pipeline]).spawn(cancel.clone());
+    let (handles, _state) = Courier::new(vec![pipeline]).spawn(cancel.clone());
 
     // With capacity=4 and a sink that never completes a write in time,
     // the source saturates after ~5 sends (4 buffered + 1 pulled by sink).
@@ -253,6 +254,8 @@ async fn script_transform_end_to_end() {
     let courier = registry
         .build_courier(Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "scripted".into(),
                 source: SourceSpec {
@@ -285,7 +288,7 @@ async fn script_transform_end_to_end() {
         })
         .unwrap();
 
-    let handles = courier.spawn(CancellationToken::new());
+    let (handles, _state) = courier.spawn(CancellationToken::new());
     join_all(handles).await;
 
     let collected = capture.handle();
@@ -321,6 +324,8 @@ async fn script_transform_filters_with_unit() {
     let courier = registry
         .build_courier(Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "filtered".into(),
                 source: SourceSpec {
@@ -348,7 +353,7 @@ async fn script_transform_filters_with_unit() {
         })
         .unwrap();
 
-    let handles = courier.spawn(CancellationToken::new());
+    let (handles, _state) = courier.spawn(CancellationToken::new());
     join_all(handles).await;
 
     assert!(capture.handle().lock().unwrap().is_empty());
@@ -384,6 +389,8 @@ async fn script_transform_drop_policy_continues_after_error() {
     let courier = registry
         .build_courier(Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "drop-errors".into(),
                 source: SourceSpec {
@@ -419,7 +426,7 @@ async fn script_transform_drop_policy_continues_after_error() {
         })
         .unwrap();
 
-    let handles = courier.spawn(CancellationToken::new());
+    let (handles, _state) = courier.spawn(CancellationToken::new());
     join_all(handles).await;
 
     let items = capture.handle();
@@ -461,6 +468,8 @@ async fn script_transform_fail_pipeline_stops_after_error() {
     let courier = registry
         .build_courier(Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "fail-pipeline".into(),
                 source: SourceSpec {
@@ -496,7 +505,7 @@ async fn script_transform_fail_pipeline_stops_after_error() {
         })
         .unwrap();
 
-    let handles = courier.spawn(CancellationToken::new());
+    let (handles, _state) = courier.spawn(CancellationToken::new());
     join_all(handles).await;
 
     assert!(capture.handle().lock().unwrap().is_empty());
@@ -529,6 +538,8 @@ async fn lua_script_transform_end_to_end() {
     let courier = registry
         .build_courier(Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "lua-scripted".into(),
                 source: SourceSpec {
@@ -561,7 +572,7 @@ async fn lua_script_transform_end_to_end() {
         })
         .unwrap();
 
-    let handles = courier.spawn(CancellationToken::new());
+    let (handles, _state) = courier.spawn(CancellationToken::new());
     join_all(handles).await;
 
     let collected = capture.handle();
@@ -597,6 +608,8 @@ async fn lua_script_transform_filters_with_nil() {
     let courier = registry
         .build_courier(Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "lua-filtered".into(),
                 source: SourceSpec {
@@ -624,7 +637,7 @@ async fn lua_script_transform_filters_with_nil() {
         })
         .unwrap();
 
-    let handles = courier.spawn(CancellationToken::new());
+    let (handles, _state) = courier.spawn(CancellationToken::new());
     join_all(handles).await;
 
     assert!(capture.handle().lock().unwrap().is_empty());
@@ -657,6 +670,8 @@ async fn python_script_transform_end_to_end() {
     let courier = registry
         .build_courier(Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "python-scripted".into(),
                 source: SourceSpec {
@@ -684,7 +699,7 @@ async fn python_script_transform_end_to_end() {
         })
         .unwrap();
 
-    let handles = courier.spawn(CancellationToken::new());
+    let (handles, _state) = courier.spawn(CancellationToken::new());
     join_all(handles).await;
 
     let collected = capture.handle();
@@ -720,6 +735,8 @@ async fn python_script_transform_filters_with_none() {
     let courier = registry
         .build_courier(Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "python-filtered".into(),
                 source: SourceSpec {
@@ -747,7 +764,7 @@ async fn python_script_transform_filters_with_none() {
         })
         .unwrap();
 
-    let handles = courier.spawn(CancellationToken::new());
+    let (handles, _state) = courier.spawn(CancellationToken::new());
     join_all(handles).await;
 
     assert!(capture.handle().lock().unwrap().is_empty());
@@ -780,6 +797,8 @@ async fn script_transform_chains_rhai_then_python() {
     let courier = registry
         .build_courier(Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "rhai-then-python".into(),
                 source: SourceSpec {
@@ -822,7 +841,7 @@ async fn script_transform_chains_rhai_then_python() {
         })
         .unwrap();
 
-    let handles = courier.spawn(CancellationToken::new());
+    let (handles, _state) = courier.spawn(CancellationToken::new());
     join_all(handles).await;
 
     let collected = capture.handle();
@@ -861,6 +880,8 @@ async fn script_transform_chains_rhai_then_lua() {
     let courier = registry
         .build_courier(Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "rhai-then-lua".into(),
                 source: SourceSpec {
@@ -909,7 +930,7 @@ async fn script_transform_chains_rhai_then_lua() {
         })
         .unwrap();
 
-    let handles = courier.spawn(CancellationToken::new());
+    let (handles, _state) = courier.spawn(CancellationToken::new());
     join_all(handles).await;
 
     let collected = capture.handle();
@@ -951,6 +972,8 @@ async fn python_script_transform_drop_policy_continues_after_error() {
     let courier = registry
         .build_courier(Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "python-drop-errors".into(),
                 source: SourceSpec {
@@ -978,7 +1001,7 @@ async fn python_script_transform_drop_policy_continues_after_error() {
         })
         .unwrap();
 
-    let handles = courier.spawn(CancellationToken::new());
+    let (handles, _state) = courier.spawn(CancellationToken::new());
     join_all(handles).await;
 
     let items = capture.handle();
@@ -1020,6 +1043,8 @@ async fn python_script_transform_fail_pipeline_stops_after_error() {
     let courier = registry
         .build_courier(Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "python-fail-pipeline".into(),
                 source: SourceSpec {
@@ -1047,7 +1072,7 @@ async fn python_script_transform_fail_pipeline_stops_after_error() {
         })
         .unwrap();
 
-    let handles = courier.spawn(CancellationToken::new());
+    let (handles, _state) = courier.spawn(CancellationToken::new());
     join_all(handles).await;
 
     assert!(capture.handle().lock().unwrap().is_empty());
@@ -1083,6 +1108,8 @@ async fn lua_script_transform_drop_policy_continues_after_error() {
     let courier = registry
         .build_courier(Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "lua-drop-errors".into(),
                 source: SourceSpec {
@@ -1118,7 +1145,7 @@ async fn lua_script_transform_drop_policy_continues_after_error() {
         })
         .unwrap();
 
-    let handles = courier.spawn(CancellationToken::new());
+    let (handles, _state) = courier.spawn(CancellationToken::new());
     join_all(handles).await;
 
     let items = capture.handle();
@@ -1160,6 +1187,8 @@ async fn lua_script_transform_fail_pipeline_stops_after_error() {
     let courier = registry
         .build_courier(Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "lua-fail-pipeline".into(),
                 source: SourceSpec {
@@ -1195,7 +1224,7 @@ async fn lua_script_transform_fail_pipeline_stops_after_error() {
         })
         .unwrap();
 
-    let handles = courier.spawn(CancellationToken::new());
+    let (handles, _state) = courier.spawn(CancellationToken::new());
     join_all(handles).await;
 
     assert!(capture.handle().lock().unwrap().is_empty());
@@ -1231,6 +1260,8 @@ async fn filter_transform_end_to_end() {
     let courier = registry
         .build_courier(Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "filtered".into(),
                 source: SourceSpec {
@@ -1257,7 +1288,7 @@ async fn filter_transform_end_to_end() {
         })
         .unwrap();
 
-    let handles = courier.spawn(CancellationToken::new());
+    let (handles, _state) = courier.spawn(CancellationToken::new());
     join_all(handles).await;
 
     let items = capture.handle();
@@ -1293,6 +1324,8 @@ async fn mutate_transform_end_to_end() {
     let courier = registry
         .build_courier(Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "mutated".into(),
                 source: SourceSpec {
@@ -1323,7 +1356,7 @@ async fn mutate_transform_end_to_end() {
         })
         .unwrap();
 
-    let handles = courier.spawn(CancellationToken::new());
+    let (handles, _state) = courier.spawn(CancellationToken::new());
     join_all(handles).await;
 
     let items = capture.handle();
@@ -1366,6 +1399,8 @@ async fn batch_transform_end_to_end() {
     let courier = registry
         .build_courier(Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "batched".into(),
                 source: SourceSpec {
@@ -1390,7 +1425,7 @@ async fn batch_transform_end_to_end() {
         })
         .unwrap();
 
-    let handles = courier.spawn(CancellationToken::new());
+    let (handles, _state) = courier.spawn(CancellationToken::new());
     join_all(handles).await;
 
     let items = capture.handle();
@@ -1421,7 +1456,7 @@ async fn broadcast_with_drop_does_not_stall_on_slow_sink() {
         .with_sink(Box::new(StallSink));
 
     let cancel = CancellationToken::new();
-    let handles = Courier::new(vec![pipeline]).spawn(cancel.clone());
+    let (handles, _state) = Courier::new(vec![pipeline]).spawn(cancel.clone());
 
     tokio::time::sleep(Duration::from_millis(100)).await;
     cancel.cancel();
@@ -1432,4 +1467,92 @@ async fn broadcast_with_drop_does_not_stall_on_slow_sink() {
         "pipeline should not stall with broadcast_with_drop"
     );
     assert_eq!(store_a.lock().unwrap().len(), 10);
+}
+
+struct AlwaysFailSink {
+    id: String,
+}
+
+impl AlwaysFailSink {
+    fn new(id: &str) -> Self {
+        Self { id: id.into() }
+    }
+}
+
+#[async_trait::async_trait]
+impl WriteOne for AlwaysFailSink {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    async fn write(&self, _env: &Envelope) -> anyhow::Result<()> {
+        anyhow::bail!("always fails")
+    }
+}
+
+struct HangingSource {
+    id: String,
+}
+
+impl HangingSource {
+    fn new(id: &str) -> Self {
+        Self { id: id.into() }
+    }
+}
+
+#[async_trait::async_trait]
+impl Source for HangingSource {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    async fn run(self: Box<Self>, tx: Sender<Envelope>, _cancel: CancellationToken) {
+        let _ = tx.send(env("hang", json!({}))).await;
+        // Intentionally ignores cancel to exercise the drain timeout.
+        tokio::time::sleep(Duration::from_secs(3600)).await;
+    }
+
+    fn set_node_ctx(&mut self, _ctx: courier::observability::NodeCtx) {}
+}
+
+/// Verifies that `run()` returns within `shutdown_timeout` even when a source
+/// hangs after cancellation. A `FailPipeline` sink fires cancel; the source
+/// ignores it; the drain timer must cut through.
+#[tokio::test]
+async fn run_drain_timeout_applies_when_source_hangs() {
+    let pipeline = Pipeline::new("p", Box::new(HangingSource::new("hang"))).with_sink(Box::new(
+        ManagedSink::new(AlwaysFailSink::new("dst")).with_error_policy(ErrorPolicy::FailPipeline),
+    ));
+
+    let start = std::time::Instant::now();
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(5),
+        Courier::new(vec![pipeline])
+            .with_shutdown_timeout(Duration::from_millis(300))
+            .run(),
+    )
+    .await
+    .expect("run() must complete within the test timeout");
+
+    assert_eq!(outcome, RunOutcome::Failed);
+    assert!(
+        start.elapsed() < Duration::from_millis(2000),
+        "run() took {:?}, expected under 2s",
+        start.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn fail_pipeline_sink_returns_failed_outcome() {
+    let source = VecSource::new("src", vec![env("src", json!({ "v": 1 }))]);
+
+    let pipeline = Pipeline::new("p", Box::new(source)).with_sink(Box::new(
+        ManagedSink::new(AlwaysFailSink::new("dst")).with_error_policy(ErrorPolicy::FailPipeline),
+    ));
+
+    let outcome = tokio::time::timeout(Duration::from_secs(5), Courier::new(vec![pipeline]).run())
+        .await
+        .expect("run() should complete when FailPipeline triggers");
+
+    assert_eq!(outcome, RunOutcome::Failed);
 }

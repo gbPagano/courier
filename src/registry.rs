@@ -589,7 +589,7 @@ mod tests {
         let courier = registry.build_courier(Config::default()).unwrap();
         // Nothing to assert beyond "no panic" — Courier has private fields.
         // Spawning produces zero handles; run-time behavior tested elsewhere.
-        let handles = courier.spawn(CancellationToken::new());
+        let (handles, _state) = courier.spawn(CancellationToken::new());
         assert!(handles.is_empty());
     }
 
@@ -627,6 +627,8 @@ mod tests {
         registry
             .build_courier(Config {
                 observability: None,
+                health: None,
+                shutdown: None,
                 pipelines: vec![PipelineSpec {
                     name: "my-pipeline".into(),
                     source: SourceSpec {
@@ -692,6 +694,8 @@ mod tests {
         let err = registry
             .build_courier(Config {
                 observability: None,
+                health: None,
+                shutdown: None,
                 pipelines: vec![PipelineSpec {
                     name: "analytics".into(),
                     source: SourceSpec {
@@ -746,6 +750,8 @@ mod tests {
         registry
             .build_courier(Config {
                 observability: None,
+                health: None,
+                shutdown: None,
                 pipelines: vec![PipelineSpec {
                     name: "p".into(),
                     source: noop_source_spec(),
@@ -789,6 +795,8 @@ mod tests {
         registry
             .build_courier(Config {
                 observability: None,
+                health: None,
+                shutdown: None,
                 pipelines: vec![PipelineSpec {
                     name: "p".into(),
                     source: noop_source_spec(),

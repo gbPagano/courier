@@ -618,6 +618,8 @@ url = "http://localhost/ingest"
 
         let config = Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "p".into(),
                 source: SourceSpec {
@@ -665,6 +667,8 @@ url = "http://localhost/ingest"
 
         let config = Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "p".into(),
                 source: SourceSpec {
@@ -714,6 +718,8 @@ url = "http://localhost/ingest"
 
         let config = Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "p".into(),
                 source: SourceSpec {
@@ -759,6 +765,8 @@ url = "http://localhost/ingest"
 
         let config = Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "p".into(),
                 source: SourceSpec {
@@ -823,6 +831,8 @@ url = "http://localhost/ingest"
 
         let config = Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "p".into(),
                 source: SourceSpec {
@@ -875,6 +885,8 @@ url = "http://localhost/ingest"
 
         let config = Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "p".into(),
                 source: SourceSpec {
@@ -925,6 +937,8 @@ url = "http://localhost/ingest"
 
         let config = Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "p".into(),
                 source: SourceSpec {
@@ -1107,6 +1121,8 @@ url = "http://localhost/ingest"
 
         let config = Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "p".into(),
                 source: SourceSpec {

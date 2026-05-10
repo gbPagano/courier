@@ -7,12 +7,20 @@ use crate::retry::RetryPolicy;
 
 use super::observability::ObservabilityConfig;
 use super::redact::{redact_secret, redact_secret_path};
-use super::types::{Config, FanOutPolicyConfig};
+use super::types::{Config, FanOutPolicyConfig, HealthConfig, ShutdownConfig};
 
 impl Config {
     pub fn validate(&self) -> Result<()> {
         if let Some(obs) = &self.observability {
             validate_observability(obs)?;
+        }
+
+        if let Some(health) = &self.health {
+            validate_health(health)?;
+        }
+
+        if let Some(shutdown) = &self.shutdown {
+            validate_shutdown(shutdown)?;
         }
 
         let mut seen_names: HashMap<&str, usize> = HashMap::new();
@@ -162,6 +170,26 @@ fn validate_retry_policy(policy: &RetryPolicy, path: &str, allow_dead_letter: bo
         }
     }
 
+    Ok(())
+}
+
+fn validate_health(health: &HealthConfig) -> Result<()> {
+    if health.address.trim().is_empty() {
+        bail!("health.address: must not be empty");
+    }
+    if health.address.parse::<std::net::SocketAddr>().is_err() {
+        bail!(
+            "health.address: invalid socket address '{}'; expected format is HOST:PORT (e.g. \"0.0.0.0:9090\")",
+            redact_secret(&health.address)
+        );
+    }
+    Ok(())
+}
+
+fn validate_shutdown(shutdown: &ShutdownConfig) -> Result<()> {
+    if shutdown.timeout_secs == 0 {
+        bail!("shutdown.timeout_secs: must be greater than 0");
+    }
     Ok(())
 }
 
@@ -408,6 +436,79 @@ mod tests {
             "{msg}"
         );
         assert!(msg.contains("is not a directory"), "{msg}");
+    }
+
+    #[test]
+    fn validate_accepts_valid_health_address() {
+        let config = Config::from_toml_str(&format!(
+            r#"
+            [health]
+            address = "127.0.0.1:9090"
+            {}"#,
+            minimal_pipeline_block()
+        ))
+        .unwrap();
+        assert!(config.validate().is_ok());
+        assert_eq!(config.health.unwrap().address, "127.0.0.1:9090");
+    }
+
+    #[test]
+    fn validate_rejects_empty_health_address() {
+        let config = Config::from_toml_str(&format!(
+            r#"
+            [health]
+            address = ""
+            {}"#,
+            minimal_pipeline_block()
+        ))
+        .unwrap();
+        let msg = format!("{:#}", config.validate().unwrap_err());
+        assert!(msg.contains("health.address"), "{msg}");
+        assert!(msg.contains("must not be empty"), "{msg}");
+    }
+
+    #[test]
+    fn validate_rejects_invalid_health_address() {
+        let config = Config::from_toml_str(&format!(
+            r#"
+            [health]
+            address = "not-a-socket-addr"
+            {}"#,
+            minimal_pipeline_block()
+        ))
+        .unwrap();
+        let msg = format!("{:#}", config.validate().unwrap_err());
+        assert!(msg.contains("health.address"), "{msg}");
+        assert!(msg.contains("invalid socket address"), "{msg}");
+    }
+
+    #[test]
+    fn validate_accepts_valid_shutdown_timeout() {
+        let config = Config::from_toml_str(&format!(
+            r#"
+            [shutdown]
+            timeout_secs = 60
+            {}"#,
+            minimal_pipeline_block()
+        ))
+        .unwrap();
+        assert!(config.validate().is_ok());
+        assert_eq!(config.shutdown.unwrap().timeout_secs, 60);
+    }
+
+    #[test]
+    fn validate_rejects_zero_shutdown_timeout() {
+        let config = Config::from_toml_str(&format!(
+            r#"
+            [shutdown]
+            timeout_secs = 0
+            {}"#,
+            minimal_pipeline_block()
+        ))
+        .unwrap();
+        let msg = format!("{:#}", config.validate().unwrap_err());
+        assert!(msg.contains("shutdown.timeout_secs"), "{msg}");
+        assert!(msg.contains("greater than 0"), "{msg}");
     }
 
     #[test]

@@ -7,8 +7,8 @@ use super::observability::{
     LogFormat, LogsConfig, MetricsConfig, ObservabilityConfig, TracingConfig,
 };
 use super::types::{
-    Config, ErrorPolicyConfig, FanOutPolicyConfig, PipelineSpec, SinkSpec, SourceSpec,
-    TransformSpec,
+    Config, ErrorPolicyConfig, FanOutPolicyConfig, HealthConfig, PipelineSpec, ShutdownConfig,
+    SinkSpec, SourceSpec, TransformSpec,
 };
 
 #[derive(Debug, Deserialize)]
@@ -17,7 +17,18 @@ pub(super) struct RawConfig {
     defaults: RawDefaults,
     #[serde(default)]
     observability: Option<RawObservability>,
+    #[serde(default)]
+    health: Option<RawHealthConfig>,
+    #[serde(default)]
+    shutdown: Option<RawShutdownConfig>,
     pipelines: Vec<RawPipelineConfig>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawShutdownConfig {
+    #[serde(default)]
+    timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -70,6 +81,13 @@ struct RawTracingConfig {
 struct RawLogsConfig {
     #[serde(default)]
     otlp_endpoint: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawHealthConfig {
+    #[serde(default)]
+    address: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -172,7 +190,23 @@ impl From<RawConfig> for Config {
                 .map(|p| pipeline_from_raw(p, &defaults))
                 .collect(),
             observability: value.observability.map(observability_from_raw),
+            health: value.health.map(health_from_raw),
+            shutdown: value.shutdown.map(shutdown_from_raw),
         }
+    }
+}
+
+fn health_from_raw(value: RawHealthConfig) -> HealthConfig {
+    let default = HealthConfig::default();
+    HealthConfig {
+        address: value.address.unwrap_or(default.address),
+    }
+}
+
+fn shutdown_from_raw(value: RawShutdownConfig) -> ShutdownConfig {
+    let default = ShutdownConfig::default();
+    ShutdownConfig {
+        timeout_secs: value.timeout_secs.unwrap_or(default.timeout_secs),
     }
 }
 

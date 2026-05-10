@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::mpsc::{self, WeakSender};
@@ -6,6 +7,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::redact_secret;
 use crate::envelope::Envelope;
+use crate::lifecycle::{CourierState, PipelineState, PipelineStatus};
 use crate::observability::{NodeCtx, NodeKind, ObsHandle};
 use crate::sinks::Sink;
 use crate::sources::Source;
@@ -109,7 +111,12 @@ impl Pipeline {
 /// - spawns one channel-depth sampler task per mpsc edge that
 ///   reports `courier_channel_capacity_used` every 300ms until the
 ///   shared cancel token fires.
-pub(crate) fn spawn_pipeline(p: Pipeline, cancel: CancellationToken) -> Vec<JoinHandle<()>> {
+pub(crate) fn spawn_pipeline(
+    p: Pipeline,
+    cancel: CancellationToken,
+    state: Arc<CourierState>,
+    pipeline_index: usize,
+) -> Vec<JoinHandle<()>> {
     let Pipeline {
         id,
         source,
@@ -119,6 +126,8 @@ pub(crate) fn spawn_pipeline(p: Pipeline, cancel: CancellationToken) -> Vec<Join
         fan_out,
         obs,
     } = p;
+
+    let status = state.pipeline_status(pipeline_index);
 
     tracing::info!(pipeline = %redact_secret(&id), "spawning pipeline");
     let mut handles = Vec::new();
@@ -132,6 +141,7 @@ pub(crate) fn spawn_pipeline(p: Pipeline, cancel: CancellationToken) -> Vec<Join
         &obs,
         cancel.clone(),
         &mut handles,
+        &status,
     );
     let prev_rx = spawn_transforms(
         &id,
@@ -142,6 +152,7 @@ pub(crate) fn spawn_pipeline(p: Pipeline, cancel: CancellationToken) -> Vec<Join
         &obs,
         cancel.clone(),
         &mut handles,
+        &status,
     );
     spawn_sinks(
         &id,
@@ -152,7 +163,10 @@ pub(crate) fn spawn_pipeline(p: Pipeline, cancel: CancellationToken) -> Vec<Join
         &obs,
         cancel,
         &mut handles,
+        &status,
     );
+
+    status.set_state(PipelineState::Running);
 
     handles
 }
@@ -167,17 +181,18 @@ fn spawn_source(
     obs: &Option<ObsHandle>,
     cancel: CancellationToken,
     handles: &mut Vec<JoinHandle<()>>,
+    status: &Arc<PipelineStatus>,
 ) -> mpsc::Receiver<Envelope> {
     let (src_tx, prev_rx) = mpsc::channel::<Envelope>(cap);
     let node_id = format!("{id}/src");
 
-    if let Some(handle) = obs {
-        source.set_node_ctx(NodeCtx::for_node(
-            id,
-            &node_id,
-            NodeKind::Source,
-            handle.clone(),
-        ));
+    {
+        let ctx = if let Some(handle) = obs {
+            NodeCtx::for_node(id, &node_id, NodeKind::Source, handle.clone())
+        } else {
+            NodeCtx::noop()
+        };
+        source.set_node_ctx(ctx.with_pipeline_status(status.clone()));
     }
 
     if let Some(handle) = obs.as_ref().filter(|h| h.is_enabled()) {
@@ -208,17 +223,18 @@ fn spawn_transforms(
     obs: &Option<ObsHandle>,
     cancel: CancellationToken,
     handles: &mut Vec<JoinHandle<()>>,
+    status: &Arc<PipelineStatus>,
 ) -> mpsc::Receiver<Envelope> {
     let total = transforms.len();
     for (i, mut t) in transforms.into_iter().enumerate() {
         let node_id = format!("{id}/t{i}");
-        if let Some(handle) = obs {
-            t.set_node_ctx(NodeCtx::for_node(
-                id,
-                &node_id,
-                NodeKind::Transform,
-                handle.clone(),
-            ));
+        {
+            let ctx = if let Some(handle) = obs {
+                NodeCtx::for_node(id, &node_id, NodeKind::Transform, handle.clone())
+            } else {
+                NodeCtx::noop()
+            };
+            t.set_node_ctx(ctx.with_pipeline_status(status.clone()));
         }
 
         let (next_tx, next_rx) = mpsc::channel::<Envelope>(cap);
@@ -254,6 +270,7 @@ fn spawn_sinks(
     obs: &Option<ObsHandle>,
     cancel: CancellationToken,
     handles: &mut Vec<JoinHandle<()>>,
+    status: &Arc<PipelineStatus>,
 ) {
     match sinks.len() {
         0 => {
@@ -278,8 +295,11 @@ fn spawn_sinks(
             obs,
             cancel,
             handles,
+            status,
         ),
-        _ => spawn_fanout(id, sinks, prev_rx, cap, fan_out, obs, cancel, handles),
+        _ => spawn_fanout(
+            id, sinks, prev_rx, cap, fan_out, obs, cancel, handles, status,
+        ),
     }
 }
 
@@ -290,15 +310,16 @@ fn spawn_single_sink(
     obs: &Option<ObsHandle>,
     cancel: CancellationToken,
     handles: &mut Vec<JoinHandle<()>>,
+    status: &Arc<PipelineStatus>,
 ) {
     let node_id = format!("{id}/sink0");
-    if let Some(handle) = obs {
-        sink.set_node_ctx(NodeCtx::for_node(
-            id,
-            &node_id,
-            NodeKind::Sink,
-            handle.clone(),
-        ));
+    {
+        let ctx = if let Some(handle) = obs {
+            NodeCtx::for_node(id, &node_id, NodeKind::Sink, handle.clone())
+        } else {
+            NodeCtx::noop()
+        };
+        sink.set_node_ctx(ctx.with_pipeline_status(status.clone()));
     }
     let c = cancel;
     handles.push(tokio::spawn(async move { sink.run(prev_rx, c).await }));
@@ -314,18 +335,19 @@ fn spawn_fanout(
     obs: &Option<ObsHandle>,
     cancel: CancellationToken,
     handles: &mut Vec<JoinHandle<()>>,
+    status: &Arc<PipelineStatus>,
 ) {
     let splitter_id = format!("{id}/fanout");
     let mut sink_txs = Vec::with_capacity(sinks.len());
     for (i, mut sink) in sinks.drain(..).enumerate() {
         let sink_node_id = format!("{id}/sink{i}");
-        if let Some(handle) = obs {
-            sink.set_node_ctx(NodeCtx::for_node(
-                id,
-                &sink_node_id,
-                NodeKind::Sink,
-                handle.clone(),
-            ));
+        {
+            let ctx = if let Some(handle) = obs {
+                NodeCtx::for_node(id, &sink_node_id, NodeKind::Sink, handle.clone())
+            } else {
+                NodeCtx::noop()
+            };
+            sink.set_node_ctx(ctx.with_pipeline_status(status.clone()));
         }
         let (tx, rx) = mpsc::channel::<Envelope>(cap);
         if let Some(handle) = obs.as_ref().filter(|h| h.is_enabled()) {
@@ -571,6 +593,7 @@ mod tests {
     use tracing_subscriber::layer::SubscriberExt;
 
     use super::*;
+    use crate::lifecycle::CourierState;
     use crate::observability::metrics::testing::{
         counter_sum, histogram_count, obs_handle_in_memory,
     };
@@ -578,6 +601,12 @@ mod tests {
     use crate::observability::{SendStopped, SourceCtx};
     use crate::sinks::{ManagedSink, WriteOne};
     use crate::transforms::{BasicTransform, MapOne};
+
+    fn test_spawn_pipeline(pipeline: Pipeline, cancel: CancellationToken) -> Vec<JoinHandle<()>> {
+        let state = Arc::new(CourierState::new(vec![pipeline.id.clone()]));
+        let idx = 0;
+        spawn_pipeline(pipeline, cancel, state, idx)
+    }
 
     static TEST_TRACING_GLOBAL: OnceLock<()> = OnceLock::new();
 
@@ -818,7 +847,7 @@ mod tests {
             .with_transform(Box::new(BasicTransform::new(EvenOnly)))
             .with_sink(Box::new(ManagedSink::new(AcceptSink)));
 
-        let handles = spawn_pipeline(pipeline, CancellationToken::new());
+        let handles = test_spawn_pipeline(pipeline, CancellationToken::new());
         join_all(handles).await;
         handle.shutdown();
 
@@ -891,7 +920,7 @@ mod tests {
             .with_sink(Box::new(DrainSink));
 
         let cancel = CancellationToken::new();
-        let mut handles = spawn_pipeline(pipeline, cancel.clone());
+        let mut handles = test_spawn_pipeline(pipeline, cancel.clone());
         let splitter = handles
             .pop()
             .expect("broadcast splitter should be the final spawned task");
@@ -1020,7 +1049,7 @@ mod tests {
         .with_sink(Box::new(DrainSink));
 
         let cancel = CancellationToken::new();
-        let handles = spawn_pipeline(pipeline, cancel.clone());
+        let handles = test_spawn_pipeline(pipeline, cancel.clone());
         tokio::time::sleep(Duration::from_millis(50)).await;
         cancel.cancel();
         let _ = tokio::time::timeout(Duration::from_millis(500), join_all(handles)).await;
@@ -1052,7 +1081,7 @@ mod tests {
             .with_sink(Box::new(CloseAfterOneSink));
 
         let cancel = CancellationToken::new();
-        let handles = spawn_pipeline(pipeline, cancel);
+        let handles = test_spawn_pipeline(pipeline, cancel);
         let result = tokio::time::timeout(Duration::from_secs(1), join_all(handles)).await;
         assert!(
             result.is_ok(),

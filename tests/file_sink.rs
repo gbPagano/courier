@@ -52,6 +52,8 @@ async fn pipeline_writes_jsonl_to_disk() {
     let courier = registry()
         .build_courier(Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "to-file".into(),
                 source: SourceSpec {
@@ -80,7 +82,7 @@ async fn pipeline_writes_jsonl_to_disk() {
         })
         .unwrap();
 
-    let handles = courier.spawn(CancellationToken::new());
+    let (handles, _state) = courier.spawn(CancellationToken::new());
     join_all(handles).await;
 
     let contents = std::fs::read_to_string(&path).unwrap();
@@ -100,6 +102,8 @@ async fn pipeline_writes_csv_with_header_then_rows() {
     let courier = registry()
         .build_courier(Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "csv".into(),
                 source: SourceSpec {
@@ -129,7 +133,7 @@ async fn pipeline_writes_csv_with_header_then_rows() {
         })
         .unwrap();
 
-    let handles = courier.spawn(CancellationToken::new());
+    let (handles, _state) = courier.spawn(CancellationToken::new());
     join_all(handles).await;
 
     let contents = std::fs::read_to_string(&path).unwrap();
@@ -152,6 +156,8 @@ async fn jsonl_envelope_mode_persists_meta_through_pipeline() {
     let courier = registry()
         .build_courier(Config {
             observability: None,
+            health: None,
+            shutdown: None,
             pipelines: vec![PipelineSpec {
                 name: "with-meta".into(),
                 source: SourceSpec {
@@ -176,7 +182,7 @@ async fn jsonl_envelope_mode_persists_meta_through_pipeline() {
         })
         .unwrap();
 
-    let handles = courier.spawn(CancellationToken::new());
+    let (handles, _state) = courier.spawn(CancellationToken::new());
     join_all(handles).await;
 
     let line = std::fs::read_to_string(&path).unwrap();
