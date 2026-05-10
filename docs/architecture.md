@@ -52,8 +52,24 @@ The plugin model has three tiers:
 
 `spawn_pipeline` (in `src/pipeline.rs`) wires `source → transforms → sinks` with bounded mpsc channels. When `sinks.len() > 1`, an implicit broadcast splitter is inserted that clones each envelope to every sink. The splitter is synchronous per sink — a slow sink applies backpressure to the whole pipeline by design. See [Backpressure](concepts/backpressure.md).
 
+## Lifecycle state
+
+Each pipeline has a thread-safe status tracker (`PipelineStatus`) that transitions through: `Starting → Running → Draining → Stopped` (or `Starting → Running → Failed` for unrecoverable errors). States are forward-only — once a pipeline reaches `Failed` or `Stopped`, no subsequent transition can overwrite it. The aggregate `CourierState` owns one `PipelineStatus` per pipeline and a global shutdown flag.
+
+The lifecycle state drives three runtime features:
+
+- **Health probes** — the `[health]` config starts an HTTP server that returns liveness and readiness based on pipeline states. See [Lifecycle, health probes, and shutdown](concepts/lifecycle.md).
+- **Graceful shutdown** — on SIGINT, pipelines transition to `Draining`, sources stop producing, and sinks drain their channel buffers. A configurable timeout bounds the wait.
+- **Exit codes** — `Courier::run()` returns `RunOutcome::Failed` if any pipeline hit `fail_pipeline`, mapping to exit code 1.
+
+## Runtime
+
+`spawn_pipeline` (in `src/pipeline.rs`) wires `source → transforms → sinks` with bounded mpsc channels. When `sinks.len() > 1`, an implicit broadcast splitter is inserted that clones each envelope to every sink. The splitter is synchronous per sink — a slow sink applies backpressure to the whole pipeline by design. See [Backpressure](concepts/backpressure.md).
+
 `Courier::run()`:
 
-1. Spawns each stage of each pipeline as a Tokio task.
-2. Installs a SIGINT/Ctrl+C handler that fires the shared `CancellationToken`.
-3. Awaits graceful drain.
+1. Spawns each stage of each pipeline as a Tokio task and sets each pipeline state to `Running`.
+2. Starts the health server if `[health]` is configured.
+3. Installs a SIGINT/Ctrl+C handler that marks shutdown requested, transitions all pipelines to `Draining`, and fires the shared `CancellationToken`.
+4. Awaits graceful drain up to `shutdown.timeout_secs` (default 30 s) after cancellation. If the deadline expires, remaining tasks are orphaned.
+5. Finalizes pipeline states to `Stopped` (or leaves them `Failed`), force-flushes observability providers, aborts the health task, and returns `RunOutcome::Success` or `RunOutcome::Failed`.

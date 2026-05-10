@@ -29,7 +29,7 @@ Pipeline definitions are loaded at runtime from `config.toml` (override with `-c
 
 - **`Envelope`** (`src/envelope.rs`) — the single wire type between all nodes. `Meta` (key, source_id, timestamp, headers) + `serde_json::Value` payload. Generics stop at the node boundary; strongly-typed payloads are opt-in via transforms that deserialize/re-serialize. W3C `traceparent` / `tracestate` ride in `Meta.headers` so spans cross the channel boundary.
 - **`Pipeline`** (`src/pipeline.rs`) — one source, zero or more transforms, one or more sinks, plus `channel_capacity` (mpsc buffer size per edge), `fan_out` policy, and an optional `ObsHandle`.
-- **`Courier`** (`src/lib.rs`) — collection of pipelines plus parsed `ObservabilityConfig`. `run()` spawns each stage as its own task and installs a SIGINT/Ctrl+C handler that fires a shared `CancellationToken` and force-flushes the metrics / traces / logs providers before exit.
+- **`Courier`** (`src/lib.rs`) — collection of pipelines plus parsed `ObservabilityConfig`, optional `HealthConfig` and `ShutdownConfig`. `run()` spawns each stage as its own task, starts a health server (if configured), installs a SIGINT/Ctrl+C handler that transitions pipelines to `Draining` and fires a shared `CancellationToken`, waits up to `shutdown_timeout` for in-flight work to drain, then returns `RunOutcome::Success` or `RunOutcome::Failed`. The exit code in `main.rs` maps `RunOutcome::Failed` → 1.
 
 ### Traits
 
@@ -39,7 +39,7 @@ Each role has two traits: a **full-control** one that owns the channel loop, and
 - **`Transform`** + **`MapOne`** (`src/transforms/mod.rs`) — `MapOne::map(env) -> Option<Envelope>` (`None` filters). Wrap in `BasicTransform` to expose as a `Transform`.
 - **`Sink`** + **`WriteOne`** (`src/sinks/mod.rs`) — `WriteOne::write(&env)`. Wrap in `ManagedSink` to expose as a `Sink`.
 
-`BasicTransform` and `ManagedSink` own the recv loop, honor the `CancellationToken`, and apply the `ErrorPolicy` (`Drop` = log and continue; `FailPipeline` = cancel the whole pipeline). `ManagedSink` additionally supports an optional `RetryPolicy`. Every node trait also has a `set_node_ctx(NodeCtx)` hook the runtime calls between build and run; managed wrappers store it for metrics/spans, custom impls can leave it as the default no-op.
+`BasicTransform` and `ManagedSink` own the recv loop, honor the `CancellationToken`, and apply the `ErrorPolicy` (`Drop` = log and continue; `FailPipeline` = cancel the whole pipeline and transition it to `Failed` state). `ManagedSink` additionally supports an optional `RetryPolicy`. Every node trait also has a `set_node_ctx(NodeCtx)` hook the runtime calls between build and run; managed wrappers store it for metrics/spans, custom impls can leave it as the default no-op.
 
 ### Retry
 
@@ -72,6 +72,14 @@ Plugin model:
 ### Runtime
 
 `spawn_pipeline` (in `src/pipeline.rs`) wires source → transforms → sinks with mpsc channels. When `sinks.len() > 1`, a **fan-out splitter** is inserted that routes each envelope according to the pipeline's `fan_out` policy.
+
+### Lifecycle state (`src/lifecycle.rs`)
+
+Each pipeline has a `PipelineStatus` tracking its state: `Starting → Running → Draining → Stopped` (graceful shutdown) or `Starting → Running → Failed` (unrecoverable error). States are forward-only; `Failed` and `Stopped` are terminal. `CourierState` owns one `PipelineStatus` per pipeline plus a global `shutdown_requested` flag. The health server reads `CourierState`; the runtime writes to it.
+
+### Health probes (`src/health.rs`)
+
+`[health]` config starts an axum HTTP server. `GET /health/live` → 200 (process alive). `GET /health/ready` → 200 when all pipelines are `Running` and no shutdown requested; 503 otherwise with a JSON body listing each pipeline's state.
 
 ### Fan-out policies
 

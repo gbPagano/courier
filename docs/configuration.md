@@ -100,6 +100,7 @@ courier run --config config.toml
 
 - **[Pipelines](configuration/pipelines.md)** — the configuration schema for sources, transforms, sinks, and channels.
 - **[Error Handling & Retry](configuration/error-handling.md)** — `on_error`, retry policies, and dead-letter routing.
+- **[Health Probes & Shutdown](configuration/health-and-shutdown.md)** — `[health]` and `[shutdown]` configuration for liveness/readiness probes and drain timeout.
 - **[Sources](configuration/sources.md)** — source configuration reference.
 - **[Transforms](configuration/transforms.md)** — transform configuration reference.
 - **[Sinks](configuration/sinks.md)** — sink configuration reference.
@@ -107,6 +108,12 @@ courier run --config config.toml
 ## Minimal example
 
 ```toml title="config.toml"
+[health]
+address = "0.0.0.0:9090"
+
+[shutdown]
+timeout_secs = 30
+
 [[pipelines]]
 name = "api->kafka"
 channel_capacity = 64

@@ -13,7 +13,7 @@ Every transform and sink accepts an optional `on_error` field:
 | Value           | Behavior |
 | --------------- | -------- |
 | `drop`          | Log the error and continue. The envelope is dropped. |
-| `fail_pipeline` | Cancel the entire pipeline via its `CancellationToken`. Other pipelines in the same `Courier` keep running. |
+| `fail_pipeline` | Cancel the entire pipeline via its `CancellationToken` and transition the pipeline to the `Failed` state. Other pipelines in the same `Courier` keep running. The process exits with code 1. See [Lifecycle](../concepts/lifecycle.md). |
 
 ```toml
 [[pipelines.transforms]]

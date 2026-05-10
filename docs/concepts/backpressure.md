@@ -46,3 +46,5 @@ Backpressure pauses *production*; cancellation stops the pipeline. Both are wire
 
 - A full inbox is normal — wait for it to drain.
 - A fired `CancellationToken` (SIGINT, or `on_error = "fail_pipeline"`) tells every node to finish its current item and exit.
+
+See [Lifecycle, health probes, and shutdown](lifecycle.md) for how cancellation ties into pipeline states and graceful drain.

@@ -63,6 +63,7 @@ nav = [
             { "Overview" = "configuration/references/index.md" },
             { "Pipelines" = "configuration/pipelines.md" },
             { "Error Handling & Retry" = "configuration/error-handling.md" },
+            { "Health Probes & Shutdown" = "configuration/health-and-shutdown.md" },
             { "Sources" = "configuration/sources.md" },
             { "Transforms" = "configuration/transforms.md" },
             { "Sinks" = "configuration/sinks.md" },
@@ -75,6 +76,7 @@ nav = [
             { "Envelope" = "concepts/envelope.md" },
             { "Backpressure" = "concepts/backpressure.md" },
             { "Observability" = "concepts/observability.md" },
+            { "Lifecycle & Health" = "concepts/lifecycle.md" },
         ] },
         { "Components" = [
             { "Overview" = "components/index.md" },

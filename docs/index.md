@@ -16,6 +16,9 @@ hide:
 - Embed scripted [transforms](scripting/index.md) in Rhai, Lua, or Python
 - Emit structured logs, metrics, and W3C-propagated traces over [OpenTelemetry](concepts/observability.md) (OTLP)
 - Shut down gracefully on SIGINT via a shared `CancellationToken`
+- Expose HTTP health probes (`/health/live`, `/health/ready`) for orchestrators
+- Track per-pipeline lifecycle state (Starting → Running → Draining → Stopped/Failed)
+- Exit with code 1 on `fail_pipeline` errors
 
 ## Where to start
 
