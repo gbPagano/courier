@@ -16,7 +16,7 @@ use wiremock::matchers::{body_json, body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use courier::Registry;
-use courier::config::{Config, PipelineSpec, SinkSpec, SourceSpec};
+use courier::config::{Config, FanOutPolicyConfig, PipelineSpec, SinkSpec, SourceSpec};
 use courier::envelope::Envelope;
 use courier::register_builtin;
 use courier::retry::{ExhaustedPolicy, RetryPolicy};
@@ -88,6 +88,7 @@ async fn pipeline_posts_payload_via_api_sink() {
                     retry: None,
                 }],
                 channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
             }],
         })
         .unwrap();
@@ -134,6 +135,7 @@ async fn api_sink_sends_full_envelope_when_configured() {
                     retry: None,
                 }],
                 channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
             }],
         })
         .unwrap();
@@ -179,6 +181,7 @@ async fn api_sink_forwards_custom_headers_and_method() {
                     retry: None,
                 }],
                 channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
             }],
         })
         .unwrap();
@@ -229,6 +232,7 @@ async fn api_sink_retries_then_succeeds_on_5xx() {
                     }),
                 }],
                 channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
             }],
         })
         .unwrap();
@@ -275,6 +279,7 @@ async fn api_sink_dead_letters_after_retry_exhaustion() {
                     }),
                 }],
                 channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
             }],
         })
         .unwrap();
@@ -339,6 +344,7 @@ async fn api_sink_drop_policy_continues_after_failure() {
                     retry: None,
                 }],
                 channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
             }],
         })
         .unwrap();
@@ -398,6 +404,7 @@ async fn api_sink_writes_through_a_transform() {
                     retry: None,
                 }],
                 channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
             }],
         })
         .unwrap();

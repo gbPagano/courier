@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
 use courier::Registry;
-use courier::config::{Config, PipelineSpec, SinkSpec, SourceSpec};
+use courier::config::{Config, FanOutPolicyConfig, PipelineSpec, SinkSpec, SourceSpec};
 use courier::envelope::Envelope;
 use courier::register_builtin;
 use courier::sources::Source;
@@ -75,6 +75,7 @@ async fn pipeline_writes_jsonl_to_disk() {
                     retry: None,
                 }],
                 channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
             }],
         })
         .unwrap();
@@ -123,6 +124,7 @@ async fn pipeline_writes_csv_with_header_then_rows() {
                     retry: None,
                 }],
                 channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
             }],
         })
         .unwrap();
@@ -169,6 +171,7 @@ async fn jsonl_envelope_mode_persists_meta_through_pipeline() {
                     retry: None,
                 }],
                 channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
             }],
         })
         .unwrap();

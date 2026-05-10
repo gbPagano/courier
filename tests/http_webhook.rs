@@ -11,7 +11,7 @@ use futures::future::join_all;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use courier::config::{Config, PipelineSpec, SinkSpec, SourceSpec};
+use courier::config::{Config, FanOutPolicyConfig, PipelineSpec, SinkSpec, SourceSpec};
 use courier::envelope::Envelope;
 use courier::pipeline::ErrorPolicy;
 use courier::retry::RetryPolicy;
@@ -69,6 +69,7 @@ async fn pipeline_receives_http_post_as_envelope() {
                     retry: None,
                 }],
                 channel_capacity: Some(1),
+                fan_out: FanOutPolicyConfig::default(),
             }],
         })
         .unwrap();
@@ -130,6 +131,7 @@ async fn invalid_webhook_requests_return_client_errors() {
                     retry: None,
                 }],
                 channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
             }],
         })
         .unwrap();

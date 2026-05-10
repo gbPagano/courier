@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 use courier::Courier;
 use courier::envelope::Envelope;
-use courier::pipeline::Pipeline;
+use courier::pipeline::{FanOutPolicy, Pipeline};
 use courier::register_builtin;
 use courier::sinks::{ManagedSink, WriteOne};
 use courier::sources::Source;
@@ -22,11 +22,14 @@ use courier::transforms::set_key::SetKeyTransform;
 use courier::transforms::{BasicTransform, MapOne};
 use courier::{
     Registry,
-    config::{Config, ErrorPolicyConfig, PipelineSpec, SinkSpec, SourceSpec, TransformSpec},
+    config::{
+        Config, ErrorPolicyConfig, FanOutPolicyConfig, PipelineSpec, SinkSpec, SourceSpec,
+        TransformSpec,
+    },
 };
 
 mod common;
-use common::{CollectingSink, VecSource};
+use common::{CollectingSink, StallSink, VecSource};
 
 fn env(id: &str, payload: serde_json::Value) -> Envelope {
     Envelope::new(id, payload)
@@ -277,6 +280,7 @@ async fn script_transform_end_to_end() {
                     retry: None,
                 }],
                 channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
             }],
         })
         .unwrap();
@@ -339,6 +343,7 @@ async fn script_transform_filters_with_unit() {
                     retry: None,
                 }],
                 channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
             }],
         })
         .unwrap();
@@ -409,6 +414,7 @@ async fn script_transform_drop_policy_continues_after_error() {
                     retry: None,
                 }],
                 channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
             }],
         })
         .unwrap();
@@ -485,6 +491,7 @@ async fn script_transform_fail_pipeline_stops_after_error() {
                     retry: None,
                 }],
                 channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
             }],
         })
         .unwrap();
@@ -549,6 +556,7 @@ async fn lua_script_transform_end_to_end() {
                     retry: None,
                 }],
                 channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
             }],
         })
         .unwrap();
@@ -611,6 +619,7 @@ async fn lua_script_transform_filters_with_nil() {
                     retry: None,
                 }],
                 channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
             }],
         })
         .unwrap();
@@ -670,6 +679,7 @@ async fn python_script_transform_end_to_end() {
                     retry: None,
                 }],
                 channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
             }],
         })
         .unwrap();
@@ -732,6 +742,7 @@ async fn python_script_transform_filters_with_none() {
                     retry: None,
                 }],
                 channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
             }],
         })
         .unwrap();
@@ -806,6 +817,7 @@ async fn script_transform_chains_rhai_then_python() {
                     retry: None,
                 }],
                 channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
             }],
         })
         .unwrap();
@@ -892,6 +904,7 @@ async fn script_transform_chains_rhai_then_lua() {
                     retry: None,
                 }],
                 channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
             }],
         })
         .unwrap();
@@ -960,6 +973,7 @@ async fn python_script_transform_drop_policy_continues_after_error() {
                     retry: None,
                 }],
                 channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
             }],
         })
         .unwrap();
@@ -1028,6 +1042,7 @@ async fn python_script_transform_fail_pipeline_stops_after_error() {
                     retry: None,
                 }],
                 channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
             }],
         })
         .unwrap();
@@ -1098,6 +1113,7 @@ async fn lua_script_transform_drop_policy_continues_after_error() {
                     retry: None,
                 }],
                 channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
             }],
         })
         .unwrap();
@@ -1174,6 +1190,7 @@ async fn lua_script_transform_fail_pipeline_stops_after_error() {
                     retry: None,
                 }],
                 channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
             }],
         })
         .unwrap();
@@ -1235,6 +1252,7 @@ async fn filter_transform_end_to_end() {
                     retry: None,
                 }],
                 channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
             }],
         })
         .unwrap();
@@ -1300,6 +1318,7 @@ async fn mutate_transform_end_to_end() {
                     retry: None,
                 }],
                 channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
             }],
         })
         .unwrap();
@@ -1366,6 +1385,7 @@ async fn batch_transform_end_to_end() {
                     retry: None,
                 }],
                 channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
             }],
         })
         .unwrap();
@@ -1379,4 +1399,37 @@ async fn batch_transform_end_to_end() {
     assert_eq!(items.len(), 2);
     assert_eq!(items[0].payload["items"].as_array().unwrap().len(), 2);
     assert_eq!(items[1].payload["items"].as_array().unwrap().len(), 1);
+}
+
+// -----------------------------------------------------------------
+// Fan-out policy tests
+// -----------------------------------------------------------------
+
+#[tokio::test]
+async fn broadcast_with_drop_does_not_stall_on_slow_sink() {
+    let source = VecSource::new(
+        "src",
+        (0..10).map(|i| env("src", json!({ "i": i }))).collect(),
+    );
+    let sink_a = CollectingSink::new("a");
+    let store_a = sink_a.handle();
+
+    let pipeline = Pipeline::new("broadcast-drop", Box::new(source))
+        .with_channel_capacity(2)
+        .with_fan_out(FanOutPolicy::BroadcastWithDrop)
+        .with_sink(Box::new(ManagedSink::new(sink_a)))
+        .with_sink(Box::new(StallSink));
+
+    let cancel = CancellationToken::new();
+    let handles = Courier::new(vec![pipeline]).spawn(cancel.clone());
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    cancel.cancel();
+
+    let result = tokio::time::timeout(Duration::from_secs(1), join_all(handles)).await;
+    assert!(
+        result.is_ok(),
+        "pipeline should not stall with broadcast_with_drop"
+    );
+    assert_eq!(store_a.lock().unwrap().len(), 10);
 }

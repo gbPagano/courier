@@ -7,7 +7,7 @@ use crate::retry::RetryPolicy;
 
 use super::observability::ObservabilityConfig;
 use super::redact::{redact_secret, redact_secret_path};
-use super::types::Config;
+use super::types::{Config, FanOutPolicyConfig};
 
 impl Config {
     pub fn validate(&self) -> Result<()> {
@@ -47,6 +47,13 @@ impl Config {
 
             if pipeline.sinks.is_empty() {
                 bail!("{pipeline_label}.sinks: at least one sink is required");
+            }
+
+            if pipeline.sinks.len() == 1 && pipeline.fan_out != FanOutPolicyConfig::Broadcast {
+                let value = pipeline.fan_out.as_str();
+                bail!(
+                    "{pipeline_label}.fan_out = \"{value}\": only meaningful with multiple sinks; remove it or add another sink"
+                );
             }
 
             for (transform_index, transform) in pipeline.transforms.iter().enumerate() {
@@ -253,6 +260,29 @@ mod tests {
         let msg = format!("{:#}", config.validate().unwrap_err());
         assert!(msg.contains("pipeline 'p'.sinks"), "{msg}");
         assert!(msg.contains("at least one sink is required"), "{msg}");
+    }
+
+    #[test]
+    fn validate_rejects_fan_out_with_single_sink() {
+        let config = Config::from_toml_str(
+            r#"
+            [[pipelines]]
+            name = "p"
+            fan_out = "broadcast_with_drop"
+            [pipelines.source]
+            type = "noop"
+            [[pipelines.sinks]]
+            type = "noop"
+            "#,
+        )
+        .unwrap();
+
+        let msg = format!("{:#}", config.validate().unwrap_err());
+        assert!(
+            msg.contains("pipeline 'p'.fan_out = \"broadcast_with_drop\""),
+            "{msg}"
+        );
+        assert!(msg.contains("multiple sinks"), "{msg}");
     }
 
     #[test]

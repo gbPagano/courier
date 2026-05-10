@@ -28,7 +28,7 @@ Pipeline definitions are loaded at runtime from `config.toml` (override with `-c
 ### Core types
 
 - **`Envelope`** (`src/envelope.rs`) — the single wire type between all nodes. `Meta` (key, source_id, timestamp, headers) + `serde_json::Value` payload. Generics stop at the node boundary; strongly-typed payloads are opt-in via transforms that deserialize/re-serialize. W3C `traceparent` / `tracestate` ride in `Meta.headers` so spans cross the channel boundary.
-- **`Pipeline`** (`src/pipeline.rs`) — one source, zero or more transforms, one or more sinks, plus `channel_capacity` (mpsc buffer size per edge) and an optional `ObsHandle`.
+- **`Pipeline`** (`src/pipeline.rs`) — one source, zero or more transforms, one or more sinks, plus `channel_capacity` (mpsc buffer size per edge), `fan_out` policy, and an optional `ObsHandle`.
 - **`Courier`** (`src/lib.rs`) — collection of pipelines plus parsed `ObservabilityConfig`. `run()` spawns each stage as its own task and installs a SIGINT/Ctrl+C handler that fires a shared `CancellationToken` and force-flushes the metrics / traces / logs providers before exit.
 
 ### Traits
@@ -71,7 +71,38 @@ Plugin model:
 
 ### Runtime
 
-`spawn_pipeline` (in `src/pipeline.rs`) wires source → transforms → sinks with mpsc channels. When `sinks.len() > 1`, an implicit **broadcast splitter** is inserted that clones each envelope to every sink. Since the splitter is synchronous per sink, a slow sink applies backpressure to the whole pipeline — by design.
+`spawn_pipeline` (in `src/pipeline.rs`) wires source → transforms → sinks with mpsc channels. When `sinks.len() > 1`, a **fan-out splitter** is inserted that routes each envelope according to the pipeline's `fan_out` policy.
+
+### Fan-out policies
+
+Configured per pipeline via `fan_out` (default: `broadcast`).
+
+| Policy | Behaviour | Backpressure | Best for |
+|---|---|---|---|
+| `broadcast` (default) | Every sink receives every envelope. | Slowest sink wins — the splitter blocks on each send, so one slow sink stalls the whole pipeline. | Mirroring writes to two equivalent stores. |
+| `broadcast_with_drop` | Every sink receives every envelope, but a sink whose channel is full gets the envelope dropped for it only. | Does **not** propagate backpressure from slow sinks. Fast sinks keep up; slow sinks drop. Metrics `courier_envelopes_dropped_total{reason="backpressure"}` and logs warn per drop. | Primary + audit log where the audit sink must not stall the primary. |
+
+Example config:
+
+```toml
+[[pipelines]]
+name = "primary-audit"
+fan_out = "broadcast_with_drop"
+
+[pipelines.source]
+type = "api_poll"
+url = "https://example.com/events"
+
+[[pipelines.sinks]]
+type = "kafka"
+brokers = "primary:9092"
+topic = "events"
+
+[[pipelines.sinks]]
+type = "file"
+path = "/var/log/audit.jsonl"
+format = "jsonl"
+```
 
 ### Runtime config loading (`src/config/`)
 

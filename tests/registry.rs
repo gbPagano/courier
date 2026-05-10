@@ -3,6 +3,7 @@
 //! flow through the resolved pipeline.
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::Result;
 use futures::future::join_all;
@@ -12,7 +13,8 @@ use tokio_util::sync::CancellationToken;
 
 use courier::Registry;
 use courier::config::{
-    Config, ErrorPolicyConfig, PipelineSpec, SinkSpec, SourceSpec, TransformSpec,
+    Config, ErrorPolicyConfig, FanOutPolicyConfig, PipelineSpec, SinkSpec, SourceSpec,
+    TransformSpec,
 };
 use courier::envelope::Envelope;
 use courier::pipeline::ErrorPolicy;
@@ -24,7 +26,7 @@ use courier::transforms::set_key::SetKeyTransform;
 use courier::transforms::{BasicTransform, Transform};
 
 mod common;
-use common::{CollectingSink, VecSource};
+use common::{CollectingSink, StallSink, VecSource};
 
 /// Factory for `VecSource` — reads a list of JSON payloads from the spec
 /// and emits one `Envelope` per entry.
@@ -141,6 +143,7 @@ async fn end_to_end_pipeline_built_through_registry() {
                     retry: None,
                 }],
                 channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
             }],
         })
         .unwrap();
@@ -199,6 +202,7 @@ async fn built_in_script_transform_runs_through_registry() {
                     retry: None,
                 }],
                 channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
             }],
         })
         .unwrap();
@@ -255,6 +259,7 @@ async fn built_in_lua_script_transform_runs_through_registry() {
                     retry: None,
                 }],
                 channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
             }],
         })
         .unwrap();
@@ -306,6 +311,7 @@ async fn built_in_python_script_transform_runs_through_registry() {
                     retry: None,
                 }],
                 channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
             }],
         })
         .unwrap();
@@ -358,6 +364,7 @@ async fn built_in_python_script_transform_supports_custom_entrypoint() {
                     retry: None,
                 }],
                 channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
             }],
         })
         .unwrap();
@@ -408,6 +415,7 @@ async fn built_in_script_transform_requires_runtime() {
                     retry: None,
                 }],
                 channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
             }],
         })
         .err()
@@ -460,6 +468,7 @@ async fn built_in_lua_script_transform_rejects_rhai_limits() {
                     retry: None,
                 }],
                 channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
             }],
         })
         .err()
@@ -508,6 +517,7 @@ async fn built_in_python_script_transform_rejects_rhai_limits() {
                     retry: None,
                 }],
                 channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
             }],
         })
         .err()
@@ -561,6 +571,7 @@ async fn registry_fan_out_to_multiple_sinks() {
                     },
                 ],
                 channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
             }],
         })
         .unwrap();
@@ -572,4 +583,68 @@ async fn registry_fan_out_to_multiple_sinks() {
     let sink1 = capture.get("fan/sink1");
     assert_eq!(sink0.lock().unwrap().len(), 3);
     assert_eq!(sink1.lock().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn broadcast_with_drop_parsed_from_toml_delivers_to_fast_sink() {
+    // Exercises the full TOML → registry → runtime path for fan_out.
+    // One capture sink (fast) and one stall sink (slow) — with
+    // broadcast_with_drop the fast sink should still receive all items
+    // while the stall sink gets dropped after its channel fills.
+    let capture = SinkRegistry::default();
+    let mut registry = Registry::default();
+    registry.register_source("vec", vec_source_factory).unwrap();
+    registry
+        .register_sink("capture", capture.factory())
+        .unwrap();
+    registry
+        .register_sink(
+            "stall",
+            |_id: &str, _: serde_json::Value, _: ErrorPolicy, _: Option<RetryPolicy>| {
+                Ok(Box::new(StallSink) as Box<dyn Sink>)
+            },
+        )
+        .unwrap();
+
+    let config = Config::from_toml_str(
+        r#"
+        [[pipelines]]
+        name = "drop-test"
+        fan_out = "broadcast_with_drop"
+        channel_capacity = 10
+
+        [pipelines.source]
+        type = "vec"
+        items = [
+            { i = 0 }, { i = 1 }, { i = 2 },
+            { i = 3 }, { i = 4 }, { i = 5 },
+        ]
+
+        [[pipelines.sinks]]
+        type = "capture"
+
+        [[pipelines.sinks]]
+        type = "stall"
+    "#,
+    )
+    .unwrap();
+
+    let courier = registry.build_courier(config).unwrap();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let handles = courier.spawn(cancel.clone());
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    cancel.cancel();
+    let result = tokio::time::timeout(Duration::from_secs(1), join_all(handles)).await;
+    assert!(
+        result.is_ok(),
+        "pipeline should not stall with broadcast_with_drop"
+    );
+
+    let collected = capture.get("drop-test/sink0");
+    assert_eq!(
+        collected.lock().unwrap().len(),
+        6,
+        "fast sink should receive all items"
+    );
 }

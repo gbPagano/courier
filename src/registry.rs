@@ -239,6 +239,7 @@ impl Registry {
         if let Some(capacity) = spec.channel_capacity {
             pipeline = pipeline.with_channel_capacity(capacity);
         }
+        pipeline = pipeline.with_fan_out(spec.fan_out.into());
 
         for (i, transform) in spec.transforms.into_iter().enumerate() {
             let id = format!("{name}/t{i}");
@@ -327,7 +328,9 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::*;
-    use crate::config::{ErrorPolicyConfig, PipelineSpec, SinkSpec, SourceSpec, TransformSpec};
+    use crate::config::{
+        ErrorPolicyConfig, FanOutPolicyConfig, PipelineSpec, SinkSpec, SourceSpec, TransformSpec,
+    };
     use crate::envelope::Envelope;
     use crate::retry::RetryPolicy;
 
@@ -648,6 +651,7 @@ mod tests {
                         },
                     ],
                     channel_capacity: None,
+                    fan_out: FanOutPolicyConfig::default(),
                 }],
             })
             .unwrap();
@@ -688,6 +692,7 @@ mod tests {
                     transforms: vec![],
                     sinks: vec![noop_sink_spec(None)],
                     channel_capacity: None,
+                    fan_out: FanOutPolicyConfig::default(),
                 }],
             })
             .err()
@@ -753,6 +758,7 @@ mod tests {
                         retry: None,
                     }],
                     channel_capacity: Some(32),
+                    fan_out: FanOutPolicyConfig::default(),
                 }],
             })
             .unwrap();
@@ -779,6 +785,7 @@ mod tests {
                     transforms: vec![noop_transform_spec(None)],
                     sinks: vec![noop_sink_spec(None)],
                     channel_capacity: None,
+                    fan_out: FanOutPolicyConfig::default(),
                 }],
             })
             .unwrap();

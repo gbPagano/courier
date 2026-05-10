@@ -76,6 +76,7 @@ struct Instruments {
     filtered: Counter<u64>,
     retries: Counter<u64>,
     dead_lettered: Counter<u64>,
+    dropped: Counter<u64>,
     stage_duration: Histogram<f64>,
     end_to_end_latency: Histogram<f64>,
     channel_capacity_used: Histogram<u64>,
@@ -132,6 +133,10 @@ impl ObsHandle {
             dead_lettered: meter
                 .u64_counter("courier_dead_lettered_total")
                 .with_description("Envelopes routed to a dead-letter sink after retries were exhausted.")
+                .build(),
+            dropped: meter
+                .u64_counter("courier_envelopes_dropped_total")
+                .with_description("Envelopes dropped by the fan-out splitter because the downstream channel was full or closed.")
                 .build(),
             stage_duration: meter
                 .f64_histogram("courier_stage_duration_milliseconds")
@@ -283,6 +288,19 @@ impl NodeCtx {
             .add(1, &self.attrs);
     }
 
+    /// Precompute a recorder for `courier_envelopes_dropped_total` bound
+    /// to a fixed `reason`. Call this once outside the hot loop and reuse
+    /// the returned `DroppedRecorder` per drop to avoid rebuilding the
+    /// attribute set on every event.
+    pub fn dropped_recorder(&self, reason: &'static str) -> DroppedRecorder {
+        let mut attrs: Vec<KeyValue> = self.attrs.iter().cloned().collect();
+        attrs.push(KeyValue::new("reason", reason));
+        DroppedRecorder {
+            handle: self.handle.clone(),
+            attrs: Arc::from(attrs.as_slice()),
+        }
+    }
+
     pub fn record_stage_duration_ms(&self, ms: f64) {
         self.handle
             .inner
@@ -305,6 +323,21 @@ impl NodeCtx {
             .instruments
             .channel_capacity_used
             .record(used, &self.attrs);
+    }
+}
+
+/// Reusable handle for counting dropped envelopes at a fixed `reason`.
+/// Built once via [`NodeCtx::dropped_recorder`] so the attribute slice
+/// is allocated up front and not rebuilt per event.
+#[derive(Clone)]
+pub struct DroppedRecorder {
+    handle: ObsHandle,
+    attrs: Arc<[KeyValue]>,
+}
+
+impl DroppedRecorder {
+    pub fn record(&self) {
+        self.handle.inner.instruments.dropped.add(1, &self.attrs);
     }
 }
 

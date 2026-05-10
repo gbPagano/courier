@@ -10,7 +10,10 @@ mod validate;
 pub use observability::{LogFormat, LogsConfig, MetricsConfig, ObservabilityConfig, TracingConfig};
 pub use parse::parse_config;
 pub use redact::{redact_secret, redact_secret_path};
-pub use types::{Config, ErrorPolicyConfig, PipelineSpec, SinkSpec, SourceSpec, TransformSpec};
+pub use types::{
+    Config, ErrorPolicyConfig, FanOutPolicyConfig, PipelineSpec, SinkSpec, SourceSpec,
+    TransformSpec,
+};
 
 #[cfg(test)]
 pub(crate) use redact::REDACTED_SECRET;

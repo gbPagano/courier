@@ -6,7 +6,10 @@ use crate::retry::RetryPolicy;
 use super::observability::{
     LogFormat, LogsConfig, MetricsConfig, ObservabilityConfig, TracingConfig,
 };
-use super::types::{Config, ErrorPolicyConfig, PipelineSpec, SinkSpec, SourceSpec, TransformSpec};
+use super::types::{
+    Config, ErrorPolicyConfig, FanOutPolicyConfig, PipelineSpec, SinkSpec, SourceSpec,
+    TransformSpec,
+};
 
 #[derive(Debug, Deserialize)]
 pub(super) struct RawConfig {
@@ -109,6 +112,8 @@ struct RawPipelineConfig {
     sinks: Vec<RawSinkConfig>,
     #[serde(default)]
     channel_capacity: Option<usize>,
+    #[serde(default)]
+    fan_out: Option<RawFanOutPolicyConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -148,6 +153,13 @@ struct RawSinkConfig {
 enum RawErrorPolicyConfig {
     Drop,
     FailPipeline,
+}
+
+#[derive(Debug, Deserialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+enum RawFanOutPolicyConfig {
+    Broadcast,
+    BroadcastWithDrop,
 }
 
 impl From<RawConfig> for Config {
@@ -223,6 +235,10 @@ fn pipeline_from_raw(value: RawPipelineConfig, defaults: &RawDefaults) -> Pipeli
             .map(|s| sink_from_raw(s, &defaults.sink))
             .collect(),
         channel_capacity: value.channel_capacity,
+        fan_out: value
+            .fan_out
+            .map(Into::into)
+            .unwrap_or(FanOutPolicyConfig::Broadcast),
     }
 }
 
@@ -260,11 +276,20 @@ impl From<RawErrorPolicyConfig> for ErrorPolicyConfig {
     }
 }
 
+impl From<RawFanOutPolicyConfig> for FanOutPolicyConfig {
+    fn from(value: RawFanOutPolicyConfig) -> Self {
+        match value {
+            RawFanOutPolicyConfig::Broadcast => FanOutPolicyConfig::Broadcast,
+            RawFanOutPolicyConfig::BroadcastWithDrop => FanOutPolicyConfig::BroadcastWithDrop,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
 
-    use crate::config::{Config, ErrorPolicyConfig};
+    use crate::config::{Config, ErrorPolicyConfig, FanOutPolicyConfig};
     use crate::retry::ExhaustedPolicy;
 
     fn dlq_at(path: &str) -> ExhaustedPolicy {
@@ -589,5 +614,56 @@ mod tests {
         let retry = config.pipelines[0].source.retry.as_ref().unwrap();
         assert_eq!(retry.max_attempts, 2);
         assert_eq!(retry.initial_delay_ms, 1);
+    }
+
+    #[test]
+    fn fan_out_parses_from_toml_and_defaults_to_broadcast() {
+        let config = Config::from_toml_str(
+            r#"
+            [[pipelines]]
+            name = "p"
+            fan_out = "broadcast_with_drop"
+            [pipelines.source]
+            type = "noop"
+            [[pipelines.sinks]]
+            type = "noop"
+
+            [[pipelines]]
+            name = "q"
+            [pipelines.source]
+            type = "noop"
+            [[pipelines.sinks]]
+            type = "noop"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.pipelines[0].fan_out,
+            FanOutPolicyConfig::BroadcastWithDrop
+        );
+        assert_eq!(config.pipelines[1].fan_out, FanOutPolicyConfig::Broadcast);
+    }
+
+    #[test]
+    fn fan_out_parses_from_json() {
+        let config = Config::from_json_str(
+            r#"{
+              "pipelines": [
+                {
+                  "name": "p",
+                  "fan_out": "broadcast_with_drop",
+                  "source": { "type": "noop" },
+                  "sinks": [{ "type": "noop" }]
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.pipelines[0].fan_out,
+            FanOutPolicyConfig::BroadcastWithDrop
+        );
     }
 }

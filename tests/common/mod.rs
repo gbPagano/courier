@@ -7,11 +7,11 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use async_trait::async_trait;
-use tokio::sync::mpsc::Sender;
+use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_util::sync::CancellationToken;
 
 use courier::envelope::Envelope;
-use courier::sinks::WriteOne;
+use courier::sinks::{Sink, WriteOne};
 use courier::sources::Source;
 
 /// Source that emits a preset list of envelopes, then closes `tx` so
@@ -74,6 +74,23 @@ impl CollectingSink {
 
     pub fn handle(&self) -> Arc<Mutex<Vec<Envelope>>> {
         Arc::clone(&self.store)
+    }
+}
+
+/// Sink that stalls forever after receiving its first envelope.
+/// Use with `broadcast_with_drop` tests to verify the fast path is not blocked.
+pub struct StallSink;
+
+#[async_trait]
+impl Sink for StallSink {
+    fn id(&self) -> &str {
+        "stall"
+    }
+
+    async fn run(self: Box<Self>, mut rx: Receiver<Envelope>, cancel: CancellationToken) {
+        if rx.recv().await.is_some() {
+            cancel.cancelled().await;
+        }
     }
 }
 

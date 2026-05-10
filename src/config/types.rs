@@ -29,6 +29,7 @@ pub struct PipelineSpec {
     pub transforms: Vec<TransformSpec>,
     pub sinks: Vec<SinkSpec>,
     pub channel_capacity: Option<usize>,
+    pub fan_out: FanOutPolicyConfig,
 }
 
 #[derive(Clone, PartialEq)]
@@ -61,6 +62,7 @@ impl fmt::Debug for PipelineSpec {
             .field("transforms", &self.transforms)
             .field("sinks", &self.sinks)
             .field("channel_capacity", &self.channel_capacity)
+            .field("fan_out", &self.fan_out)
             .finish()
     }
 }
@@ -103,11 +105,38 @@ pub enum ErrorPolicyConfig {
     FailPipeline,
 }
 
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+pub enum FanOutPolicyConfig {
+    #[default]
+    Broadcast,
+    BroadcastWithDrop,
+}
+
+impl FanOutPolicyConfig {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FanOutPolicyConfig::Broadcast => "broadcast",
+            FanOutPolicyConfig::BroadcastWithDrop => "broadcast_with_drop",
+        }
+    }
+}
+
 impl From<ErrorPolicyConfig> for ErrorPolicy {
     fn from(value: ErrorPolicyConfig) -> Self {
         match value {
             ErrorPolicyConfig::Drop => ErrorPolicy::Drop,
             ErrorPolicyConfig::FailPipeline => ErrorPolicy::FailPipeline,
+        }
+    }
+}
+
+impl From<FanOutPolicyConfig> for crate::pipeline::FanOutPolicy {
+    fn from(value: FanOutPolicyConfig) -> Self {
+        match value {
+            FanOutPolicyConfig::Broadcast => crate::pipeline::FanOutPolicy::Broadcast,
+            FanOutPolicyConfig::BroadcastWithDrop => {
+                crate::pipeline::FanOutPolicy::BroadcastWithDrop
+            }
         }
     }
 }

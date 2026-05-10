@@ -29,16 +29,26 @@ pub enum ErrorPolicy {
     FailPipeline,
 }
 
+#[derive(Debug, Clone, Default, Eq, PartialEq)]
+pub enum FanOutPolicy {
+    /// Every sink receives every envelope; backpressure from the slowest sink stalls the pipeline.
+    #[default]
+    Broadcast,
+    /// Every sink receives every envelope; a full channel drops the envelope for that sink only.
+    BroadcastWithDrop,
+}
+
 /// One source feeding optional transforms into one or more sinks.
 ///
 /// When constructed with more than one sink, `spawn_pipeline` inserts a
-/// broadcast splitter that clones each envelope to every sink.
+/// fan-out splitter that routes each envelope according to `fan_out`.
 pub struct Pipeline {
     pub id: String,
     pub source: Box<dyn Source>,
     pub transforms: Vec<Box<dyn Transform>>,
     pub sinks: Vec<Box<dyn Sink>>,
     pub channel_capacity: usize,
+    pub fan_out: FanOutPolicy,
     /// Optional shared metrics handle. `Registry::build_courier`
     /// attaches this from the courier-wide `ObsHandle`; tests that
     /// build pipelines manually leave it `None`, which means every
@@ -55,6 +65,7 @@ impl Pipeline {
             transforms: Vec::new(),
             sinks: Vec::new(),
             channel_capacity: 64,
+            fan_out: FanOutPolicy::Broadcast,
             obs: None,
         }
     }
@@ -74,6 +85,11 @@ impl Pipeline {
         self
     }
 
+    pub fn with_fan_out(mut self, policy: FanOutPolicy) -> Self {
+        self.fan_out = policy;
+        self
+    }
+
     pub fn with_observability(mut self, obs: Option<ObsHandle>) -> Self {
         self.obs = obs;
         self
@@ -81,9 +97,10 @@ impl Pipeline {
 }
 
 /// Wires source → transforms → sinks with mpsc channels and spawns each
-/// node as its own tokio task. When `sinks.len() > 1`, an implicit
-/// broadcast splitter is inserted. The splitter is synchronous per sink:
-/// a slow sink applies backpressure to the whole pipeline.
+/// node as its own tokio task. When `sinks.len() > 1`, a fan-out
+/// splitter is inserted according to `pipeline.fan_out`. The default
+/// `Broadcast` splitter is synchronous per sink: a slow sink applies
+/// backpressure to the whole pipeline.
 ///
 /// When the pipeline carries an `ObsHandle`, this function also:
 /// - mints a `NodeCtx` per source/transform/sink and attaches it via
@@ -95,51 +112,109 @@ impl Pipeline {
 pub(crate) fn spawn_pipeline(p: Pipeline, cancel: CancellationToken) -> Vec<JoinHandle<()>> {
     let Pipeline {
         id,
-        mut source,
-        mut transforms,
-        mut sinks,
+        source,
+        transforms,
+        sinks,
         channel_capacity: cap,
+        fan_out,
         obs,
     } = p;
 
     tracing::info!(pipeline = %redact_secret(&id), "spawning pipeline");
     let mut handles = Vec::new();
 
-    let (src_tx, mut prev_rx) = mpsc::channel::<Envelope>(cap);
-    let mut prev_node_id = format!("{id}/src");
-    let transforms_total = transforms.len();
+    let prev_rx = spawn_source(
+        &id,
+        source,
+        &transforms,
+        &sinks,
+        cap,
+        &obs,
+        cancel.clone(),
+        &mut handles,
+    );
+    let prev_rx = spawn_transforms(
+        &id,
+        transforms,
+        &sinks,
+        prev_rx,
+        cap,
+        &obs,
+        cancel.clone(),
+        &mut handles,
+    );
+    spawn_sinks(
+        &id,
+        sinks,
+        prev_rx,
+        cap,
+        fan_out,
+        &obs,
+        cancel,
+        &mut handles,
+    );
 
-    if let Some(handle) = &obs {
+    handles
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_source(
+    id: &str,
+    mut source: Box<dyn Source>,
+    transforms: &[Box<dyn Transform>],
+    sinks: &[Box<dyn Sink>],
+    cap: usize,
+    obs: &Option<ObsHandle>,
+    cancel: CancellationToken,
+    handles: &mut Vec<JoinHandle<()>>,
+) -> mpsc::Receiver<Envelope> {
+    let (src_tx, prev_rx) = mpsc::channel::<Envelope>(cap);
+    let node_id = format!("{id}/src");
+
+    if let Some(handle) = obs {
         source.set_node_ctx(NodeCtx::for_node(
-            &id,
-            &prev_node_id,
+            id,
+            &node_id,
             NodeKind::Source,
             handle.clone(),
         ));
     }
 
-    // Source-out edge sampler.
     if let Some(handle) = obs.as_ref().filter(|h| h.is_enabled()) {
         spawn_edge_sampler(
-            &id,
-            &prev_node_id,
-            &next_transform_or_sink_id(&id, &transforms, &sinks),
+            id,
+            &node_id,
+            &next_transform_or_sink_id(id, transforms, sinks),
             cap,
             src_tx.downgrade(),
             handle.clone(),
             cancel.clone(),
-            &mut handles,
+            handles,
         );
     }
 
-    let c = cancel.clone();
+    let c = cancel;
     handles.push(tokio::spawn(async move { source.run(src_tx, c).await }));
+    prev_rx
+}
 
-    for (i, mut t) in transforms.drain(..).enumerate() {
+#[allow(clippy::too_many_arguments)]
+fn spawn_transforms(
+    id: &str,
+    transforms: Vec<Box<dyn Transform>>,
+    sinks: &[Box<dyn Sink>],
+    mut prev_rx: mpsc::Receiver<Envelope>,
+    cap: usize,
+    obs: &Option<ObsHandle>,
+    cancel: CancellationToken,
+    handles: &mut Vec<JoinHandle<()>>,
+) -> mpsc::Receiver<Envelope> {
+    let total = transforms.len();
+    for (i, mut t) in transforms.into_iter().enumerate() {
         let node_id = format!("{id}/t{i}");
-        if let Some(handle) = &obs {
+        if let Some(handle) = obs {
             t.set_node_ctx(NodeCtx::for_node(
-                &id,
+                id,
                 &node_id,
                 NodeKind::Transform,
                 handle.clone(),
@@ -148,18 +223,16 @@ pub(crate) fn spawn_pipeline(p: Pipeline, cancel: CancellationToken) -> Vec<Join
 
         let (next_tx, next_rx) = mpsc::channel::<Envelope>(cap);
 
-        // Edge from this transform to the next stage.
         if let Some(handle) = obs.as_ref().filter(|h| h.is_enabled()) {
-            let dest_node_id = transform_or_sink_id_after(&id, i + 1, transforms_total, &sinks);
             spawn_edge_sampler(
-                &id,
+                id,
                 &node_id,
-                &dest_node_id,
+                &transform_or_sink_id_after(id, i + 1, total, sinks),
                 cap,
                 next_tx.downgrade(),
                 handle.clone(),
                 cancel.clone(),
-                &mut handles,
+                handles,
             );
         }
 
@@ -167,100 +240,235 @@ pub(crate) fn spawn_pipeline(p: Pipeline, cancel: CancellationToken) -> Vec<Join
         let c = cancel.clone();
         handles.push(tokio::spawn(async move { t.run(rx, next_tx, c).await }));
         prev_rx = next_rx;
-        prev_node_id = node_id;
     }
+    prev_rx
+}
 
+#[allow(clippy::too_many_arguments)]
+fn spawn_sinks(
+    id: &str,
+    sinks: Vec<Box<dyn Sink>>,
+    prev_rx: mpsc::Receiver<Envelope>,
+    cap: usize,
+    fan_out: FanOutPolicy,
+    obs: &Option<ObsHandle>,
+    cancel: CancellationToken,
+    handles: &mut Vec<JoinHandle<()>>,
+) {
     match sinks.len() {
         0 => {
             tracing::warn!(
-                pipeline = %redact_secret(&id),
+                pipeline = %redact_secret(id),
                 "pipeline has no sinks; envelopes will be discarded"
             );
-            let c = cancel.clone();
             handles.push(tokio::spawn(async move {
+                let mut rx = prev_rx;
                 loop {
                     tokio::select! {
-                        _ = c.cancelled() => break,
-                        m = prev_rx.recv() => if m.is_none() { break },
+                        _ = cancel.cancelled() => break,
+                        m = rx.recv() => if m.is_none() { break },
                     }
                 }
             }));
         }
-        1 => {
-            let mut sink = sinks.into_iter().next().unwrap();
-            let sink_node_id = format!("{id}/sink0");
-            if let Some(handle) = &obs {
-                sink.set_node_ctx(NodeCtx::for_node(
-                    &id,
-                    &sink_node_id,
-                    NodeKind::Sink,
-                    handle.clone(),
-                ));
-            }
-            let c = cancel.clone();
-            handles.push(tokio::spawn(async move { sink.run(prev_rx, c).await }));
-            let _ = prev_node_id; // last edge already sampled above
+        1 => spawn_single_sink(
+            id,
+            sinks.into_iter().next().unwrap(),
+            prev_rx,
+            obs,
+            cancel,
+            handles,
+        ),
+        _ => spawn_fanout(id, sinks, prev_rx, cap, fan_out, obs, cancel, handles),
+    }
+}
+
+fn spawn_single_sink(
+    id: &str,
+    mut sink: Box<dyn Sink>,
+    prev_rx: mpsc::Receiver<Envelope>,
+    obs: &Option<ObsHandle>,
+    cancel: CancellationToken,
+    handles: &mut Vec<JoinHandle<()>>,
+) {
+    let node_id = format!("{id}/sink0");
+    if let Some(handle) = obs {
+        sink.set_node_ctx(NodeCtx::for_node(
+            id,
+            &node_id,
+            NodeKind::Sink,
+            handle.clone(),
+        ));
+    }
+    let c = cancel;
+    handles.push(tokio::spawn(async move { sink.run(prev_rx, c).await }));
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_fanout(
+    id: &str,
+    mut sinks: Vec<Box<dyn Sink>>,
+    prev_rx: mpsc::Receiver<Envelope>,
+    cap: usize,
+    fan_out: FanOutPolicy,
+    obs: &Option<ObsHandle>,
+    cancel: CancellationToken,
+    handles: &mut Vec<JoinHandle<()>>,
+) {
+    let splitter_id = format!("{id}/fanout");
+    let mut sink_txs = Vec::with_capacity(sinks.len());
+    for (i, mut sink) in sinks.drain(..).enumerate() {
+        let sink_node_id = format!("{id}/sink{i}");
+        if let Some(handle) = obs {
+            sink.set_node_ctx(NodeCtx::for_node(
+                id,
+                &sink_node_id,
+                NodeKind::Sink,
+                handle.clone(),
+            ));
         }
-        _ => {
-            let splitter_id = format!("{id}/broadcast");
-            let mut sink_txs = Vec::with_capacity(sinks.len());
-            for (i, mut sink) in sinks.drain(..).enumerate() {
-                let sink_node_id = format!("{id}/sink{i}");
-                if let Some(handle) = &obs {
-                    sink.set_node_ctx(NodeCtx::for_node(
-                        &id,
-                        &sink_node_id,
-                        NodeKind::Sink,
-                        handle.clone(),
-                    ));
-                }
-                let (tx, rx) = mpsc::channel::<Envelope>(cap);
-                if let Some(handle) = obs.as_ref().filter(|h| h.is_enabled()) {
-                    spawn_edge_sampler(
-                        &id,
-                        &splitter_id,
-                        &sink_node_id,
-                        cap,
-                        tx.downgrade(),
-                        handle.clone(),
-                        cancel.clone(),
-                        &mut handles,
-                    );
-                }
-                sink_txs.push(tx);
-                let c = cancel.clone();
-                handles.push(tokio::spawn(async move { sink.run(rx, c).await }));
-            }
-            let c = cancel.clone();
-            let splitter_log_id = splitter_id.clone();
-            handles.push(tokio::spawn(async move {
-                'splitter: loop {
-                    tokio::select! {
-                        _ = c.cancelled() => break,
-                        maybe = prev_rx.recv() => {
-                            let Some(env) = maybe else { break };
-                            for tx in &sink_txs {
-                                tokio::select! {
-                                    _ = c.cancelled() => break 'splitter,
-                                    res = tx.send(env.clone()) => {
-                                        if res.is_err() {
-                                            tracing::debug!(node_id = %redact_secret(&splitter_log_id), "downstream sink closed");
-                                        }
+        let (tx, rx) = mpsc::channel::<Envelope>(cap);
+        if let Some(handle) = obs.as_ref().filter(|h| h.is_enabled()) {
+            spawn_edge_sampler(
+                id,
+                &splitter_id,
+                &sink_node_id,
+                cap,
+                tx.downgrade(),
+                handle.clone(),
+                cancel.clone(),
+                handles,
+            );
+        }
+        sink_txs.push(tx);
+        let c = cancel.clone();
+        handles.push(tokio::spawn(async move { sink.run(rx, c).await }));
+    }
+    match fan_out {
+        FanOutPolicy::Broadcast => {
+            spawn_broadcast_splitter(splitter_id, prev_rx, sink_txs, cancel, handles)
+        }
+        FanOutPolicy::BroadcastWithDrop => {
+            spawn_broadcast_with_drop_splitter(
+                id,
+                splitter_id,
+                prev_rx,
+                sink_txs,
+                obs,
+                cancel,
+                handles,
+            );
+        }
+    }
+}
+
+fn spawn_broadcast_splitter(
+    splitter_id: String,
+    mut prev_rx: mpsc::Receiver<Envelope>,
+    mut sink_txs: Vec<mpsc::Sender<Envelope>>,
+    cancel: CancellationToken,
+    handles: &mut Vec<JoinHandle<()>>,
+) {
+    // No NodeCtx: Broadcast never drops envelopes, so there is
+    // nothing to record on the splitter node itself.
+    handles.push(tokio::spawn(async move {
+        'splitter: loop {
+            tokio::select! {
+                _ = cancel.cancelled() => break,
+                maybe = prev_rx.recv() => {
+                    let Some(env) = maybe else { break };
+                    let mut i = 0;
+                    while i < sink_txs.len() {
+                        tokio::select! {
+                            _ = cancel.cancelled() => break 'splitter,
+                            res = sink_txs[i].send(env.clone()) => {
+                                if res.is_err() {
+                                    tracing::debug!(
+                                        node_id = %redact_secret(&splitter_id),
+                                        sink_index = i,
+                                        "downstream sink closed, removing from fanout"
+                                    );
+                                    sink_txs.swap_remove(i);
+                                    if sink_txs.is_empty() {
+                                        break 'splitter;
                                     }
+                                    // don't increment — the swapped sink needs a turn
+                                } else {
+                                    i += 1;
                                 }
                             }
                         }
                     }
                 }
-            }));
+            }
         }
-    }
+    }));
+}
 
-    handles
+fn spawn_broadcast_with_drop_splitter(
+    pipeline_id: &str,
+    splitter_id: String,
+    mut prev_rx: mpsc::Receiver<Envelope>,
+    mut sink_txs: Vec<mpsc::Sender<Envelope>>,
+    obs: &Option<ObsHandle>,
+    cancel: CancellationToken,
+    handles: &mut Vec<JoinHandle<()>>,
+) {
+    let dropped_recorder = obs.as_ref().map(|handle| {
+        NodeCtx::for_node(
+            pipeline_id,
+            &splitter_id,
+            NodeKind::Splitter,
+            handle.clone(),
+        )
+        .dropped_recorder("backpressure")
+    });
+    handles.push(tokio::spawn(async move {
+        'splitter: loop {
+            tokio::select! {
+                _ = cancel.cancelled() => break,
+                maybe = prev_rx.recv() => {
+                    let Some(env) = maybe else { break };
+                    let mut i = 0;
+                    while i < sink_txs.len() {
+                        if cancel.is_cancelled() {
+                            break 'splitter;
+                        }
+                        match sink_txs[i].try_send(env.clone()) {
+                            Ok(()) => i += 1,
+                            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                                if let Some(ref r) = dropped_recorder {
+                                    r.record();
+                                }
+                                tracing::debug!(
+                                    node_id = %redact_secret(&splitter_id),
+                                    sink_index = i,
+                                    "downstream sink channel full, envelope dropped"
+                                );
+                                i += 1;
+                            }
+                            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                                tracing::debug!(
+                                    node_id = %redact_secret(&splitter_id),
+                                    sink_index = i,
+                                    "downstream sink closed, removing from fanout"
+                                );
+                                sink_txs.swap_remove(i);
+                                if sink_txs.is_empty() {
+                                    break 'splitter;
+                                }
+                                // don't increment — the swapped sink needs a turn
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }));
 }
 
 /// First downstream node id from the source's perspective: either the
-/// first transform (if any) or `sink0`/`broadcast` depending on the
+/// first transform (if any) or `sink0`/`fanout` depending on the
 /// sink count. Used purely to label the source-out edge gauge.
 fn next_transform_or_sink_id(
     id: &str,
@@ -270,7 +478,7 @@ fn next_transform_or_sink_id(
     if !transforms.is_empty() {
         format!("{id}/t0")
     } else if sinks.len() > 1 {
-        format!("{id}/broadcast")
+        format!("{id}/fanout")
     } else {
         format!("{id}/sink0")
     }
@@ -287,7 +495,7 @@ fn transform_or_sink_id_after(
     if next_index < total_transforms {
         format!("{id}/t{next_index}")
     } else if sinks.len() > 1 {
-        format!("{id}/broadcast")
+        format!("{id}/fanout")
     } else {
         format!("{id}/sink0")
     }
@@ -482,6 +690,37 @@ mod tests {
                 self.first_received.notify_one();
                 futures::future::pending::<()>().await;
             }
+        }
+    }
+
+    /// Sink that receives one envelope and then stalls forever. Used by
+    /// fan-out tests that need a permanently-blocked downstream channel.
+    struct StallForeverAfterFirstSink;
+
+    #[async_trait]
+    impl Sink for StallForeverAfterFirstSink {
+        fn id(&self) -> &str {
+            "stall-forever"
+        }
+
+        async fn run(self: Box<Self>, mut rx: Receiver<Envelope>, _cancel: CancellationToken) {
+            if rx.recv().await.is_some() {
+                futures::future::pending::<()>().await;
+            }
+        }
+    }
+
+    struct CloseAfterOneSink;
+
+    #[async_trait]
+    impl Sink for CloseAfterOneSink {
+        fn id(&self) -> &str {
+            "close-after-one"
+        }
+
+        async fn run(self: Box<Self>, mut rx: Receiver<Envelope>, _cancel: CancellationToken) {
+            rx.recv().await;
+            // dropping rx closes the channel from this side
         }
     }
 
@@ -764,6 +1003,60 @@ mod tests {
                 .iter()
                 .all(|s| s.span_context.trace_id().to_string() == incoming_trace_id),
             "spans did not share incoming trace id: {spans:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn broadcast_with_drop_records_dropped_metrics() {
+        let (handle, exporter) = obs_handle_in_memory();
+        let pipeline = Pipeline::new(
+            "broadcast-drop-metrics",
+            Box::new(BurstSource { count: 10 }),
+        )
+        .with_channel_capacity(1)
+        .with_fan_out(FanOutPolicy::BroadcastWithDrop)
+        .with_observability(Some(handle.clone()))
+        .with_sink(Box::new(StallForeverAfterFirstSink))
+        .with_sink(Box::new(DrainSink));
+
+        let cancel = CancellationToken::new();
+        let handles = spawn_pipeline(pipeline, cancel.clone());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        cancel.cancel();
+        let _ = tokio::time::timeout(Duration::from_millis(500), join_all(handles)).await;
+
+        handle.force_flush();
+        let dropped = counter_sum(
+            &exporter,
+            "courier_envelopes_dropped_total",
+            &[
+                ("pipeline", "broadcast-drop-metrics"),
+                ("node_id", "broadcast-drop-metrics/fanout"),
+                ("reason", "backpressure"),
+            ],
+        );
+        assert!(
+            dropped > 0,
+            "expected some dropped envelopes due to backpressure"
+        );
+    }
+
+    #[tokio::test]
+    async fn broadcast_with_drop_all_sinks_close_terminates_cleanly() {
+        // When every sink closes before the source finishes, the splitter
+        // should drain prev_rx and exit without hanging.
+        let pipeline = Pipeline::new("all-closed", Box::new(BurstSource { count: 20 }))
+            .with_channel_capacity(4)
+            .with_fan_out(FanOutPolicy::BroadcastWithDrop)
+            .with_sink(Box::new(CloseAfterOneSink))
+            .with_sink(Box::new(CloseAfterOneSink));
+
+        let cancel = CancellationToken::new();
+        let handles = spawn_pipeline(pipeline, cancel);
+        let result = tokio::time::timeout(Duration::from_secs(1), join_all(handles)).await;
+        assert!(
+            result.is_ok(),
+            "pipeline should terminate when all sinks close"
         );
     }
 }
