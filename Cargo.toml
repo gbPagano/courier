@@ -52,9 +52,18 @@ opentelemetry-otlp = { version = "0.31.1", default-features = false, features = 
 opentelemetry-appender-tracing = "0.31.1"
 
 [dev-dependencies]
+criterion = { version = "0.8", features = ["async_tokio"] }
 http-body-util = "0.1"
 opentelemetry_sdk = { version = "0.31.0", features = ["testing"] }
 tempfile = "3"
 testcontainers-modules = { version = "0.15.0", features = ["kafka", "postgres"] }
 tower = "0.5"
 wiremock = "0.6.5"
+
+[[bench]]
+name = "transform_throughput"
+harness = false
+
+[[bench]]
+name = "pipeline_scaling"
+harness = false

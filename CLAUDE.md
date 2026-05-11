@@ -11,7 +11,27 @@ cargo clippy --all-targets           # Lint
 cargo fmt                            # Format
 cargo test                           # Run all tests
 cargo test <test_name>               # Run a single test
+cargo bench --bench transform_throughput              # Run all benchmarks
+cargo bench --bench transform_throughput -- <group>   # Run a specific group
 ```
+
+Available benchmark groups: `passthrough`, `chain_native`, `chain_rhai`, `chain_lua`, `chain_python`, `pipeline_scaling_total`, `pipeline_scaling_per`. Python benchmarks require `python3` on `$PATH`. Pipeline scaling groups use a multi-thread tokio runtime and vary concurrent pipeline count [1, 2, 4, 8, 16] with a fixed chain of 2 native + 1 rhai transform each.
+
+### Benchmark architecture (`benches/`)
+
+- **`transform_throughput.rs`** — Criterion benchmarks measuring envelope throughput through a single pipeline on a single-thread tokio runtime.
+  - `bench_passthrough`: source → sink with zero transforms (baseline overhead, 10K envelopes).
+  - `bench_all_chains`: for each runtime (`native`, `rhai`, `lua`, `python`), varies transform count (1, 3, 5, …) and measures throughput. Python uses only 1K envelopes and a longer `measurement_time` (20s) because it spawns an external process per invocation, making it orders of magnitude slower than the embedded runtimes.
+  - After each run, walks `target/criterion/` to parse Criterion's JSON output and prints a formatted summary table of throughput (envelopes/sec) by runtime × transform count.
+
+- **`pipeline_scaling.rs`** — Criterion benchmarks measuring how throughput scales with concurrent pipelines on a multi-thread tokio runtime. Each pipeline runs 2 native + 1 rhai transform. Two groups: `pipeline_scaling_total` (aggregate throughput across all pipelines) and `pipeline_scaling_per` (per-pipeline throughput). Also prints a summary table after each run.
+
+- **`utils.rs`** — Shared helpers:
+  - `BurstSource`: emits N envelopes in a burst on a single-thread runtime.
+  - `CountWriteOne`: sink that atomically counts received envelopes.
+  - `build_transform(runtime, index)`: creates the appropriate transform for each runtime.
+  - `execute_pipeline(source, transforms, sink)`: wires nodes with `mpsc` channels of capacity 1024, spawns tokio tasks, and joins them.
+  - `run_pipeline(count, runtime, transform_count)`: high-level helper that builds all components, calls `execute_pipeline`, and returns the total received count.
 
 The crate is published as `data-courier`; the library and binary are both named `courier`. The `courier` binary is a `clap` CLI with three subcommands:
 
