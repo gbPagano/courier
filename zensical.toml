@@ -99,6 +99,10 @@ nav = [
             { "Reliability" = "examples/recipes/reliability.md" },
             { "Observability" = "examples/recipes/observability.md" },
         ] },
+        { "Performance" = [
+            { "Overview" = "examples/performance/index.md" },
+            { "Benchmarks" = "examples/performance/benchmarks.md" },
+        ] },
     ] },
     { "Contributing" = [
         { "Contribute" = [

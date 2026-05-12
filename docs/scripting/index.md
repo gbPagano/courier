@@ -12,12 +12,15 @@ The built-in `script` transform lets you write per-envelope logic without recomp
 
 ## Choosing a runtime
 
-| Concern                          | Rhai | Lua | Python |
-| -------------------------------- | :--: | :-: | :----: |
-| Embedded (no subprocess)         | ✅   | ✅  | ❌     |
-| Sandbox / execution budget       | ✅   | ❌  | ❌     |
-| External libraries available     | ❌   | ❌  | ✅     |
-| Cold-start cost                  | low  | low | higher |
+| Concern                          | Rhai    | Lua     | Python  |
+| -------------------------------- | :-----: | :-----: | :-----: |
+| Embedded (no subprocess)         | ✅      | ✅      | ❌      |
+| Sandbox / execution budget       | ✅      | ❌      | ❌      |
+| External libraries available     | ❌      | ❌      | ✅      |
+| Cold-start cost                  | low     | low     | higher  |
+| Throughput (1 transform)[^1]     | ~489 K/s | ~210 K/s | ~22 K/s |
+
+[^1]: Reference values measured on an Intel Core i7-12800H. See [Benchmarks](../examples/performance/benchmarks.md) for full numbers across transform counts and pipeline scaling.
 
 When in doubt, start with Rhai. Move to Lua for slightly more familiar syntax. Reach for Python when you need libraries Courier can't reasonably ship (e.g. heavy data manipulation, ML inference).
 
