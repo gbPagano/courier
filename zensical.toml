@@ -90,6 +90,7 @@ nav = [
         { "Rhai" = "scripting/rhai.md" },
         { "Lua" = "scripting/lua.md" },
         { "Python" = "scripting/python.md" },
+        { "Security" = "scripting/security.md" },
     ] },
     { "Examples" = [
         { "Recipes" = [

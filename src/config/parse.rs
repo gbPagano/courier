@@ -312,6 +312,37 @@ mod tests {
     }
 
     #[test]
+    fn in_memory_config_leaves_relative_script_file_unchanged() {
+        // from_toml_str has no base_dir → resolve_script_file_paths is a no-op.
+        // The relative path is left as-is; std::fs::read_to_string will later
+        // resolve it against the process CWD (documented fallback behaviour).
+        let config = Config::from_toml_str(
+            r#"
+            [[pipelines]]
+            name = "p"
+
+            [pipelines.source]
+            type = "noop"
+
+            [[pipelines.transforms]]
+            type = "script"
+            runtime = "rhai"
+            script_file = "./scripts/transform.rhai"
+
+            [[pipelines.sinks]]
+            type = "noop"
+            "#,
+        )
+        .unwrap();
+
+        let script_file = config.pipelines[0].transforms[0].config["script_file"]
+            .as_str()
+            .unwrap();
+        assert_eq!(script_file, "./scripts/transform.rhai");
+        assert!(!std::path::Path::new(script_file).is_absolute());
+    }
+
+    #[test]
     fn from_json_str_preserves_arbitrary_component_fields() {
         let config = Config::from_json_str(
             r#"{

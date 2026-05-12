@@ -310,6 +310,119 @@ mod tests {
     }
 
     #[test]
+    fn load_resolves_script_file_absolute_path_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let script_path = dir.path().join("absolute.rhai");
+        std::fs::write(&script_path, "fn transform(env) { env }").unwrap();
+
+        let config_path = dir.path().join("courier.toml");
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"
+                [[pipelines]]
+                name = "script-abs"
+
+                [pipelines.source]
+                type = "noop"
+
+                [[pipelines.transforms]]
+                type = "script"
+                runtime = "rhai"
+                script_file = "{}"
+
+                [[pipelines.sinks]]
+                type = "noop"
+                "#,
+                script_path.to_string_lossy().replace('\\', "/"),
+            ),
+        )
+        .unwrap();
+
+        let config = Config::load(&config_path).unwrap();
+        let script_file = config.pipelines[0].transforms[0].config["script_file"]
+            .as_str()
+            .unwrap();
+        assert_eq!(script_file, script_path.to_string_lossy().as_ref());
+        assert!(std::path::Path::new(script_file).is_absolute());
+    }
+
+    #[test]
+    fn load_directory_resolves_script_file_relative_to_each_config_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let scripts_a = dir.path().join("scripts-a");
+        let scripts_b = dir.path().join("scripts-b");
+        std::fs::create_dir(&scripts_a).unwrap();
+        std::fs::create_dir(&scripts_b).unwrap();
+        std::fs::write(scripts_a.join("enrich.rhai"), "fn transform(env) { env }").unwrap();
+        std::fs::write(scripts_b.join("enrich.rhai"), "fn transform(env) { env }").unwrap();
+
+        std::fs::write(
+            dir.path().join("a.toml"),
+            r#"
+            [[pipelines]]
+            name = "pipeline-a"
+            [pipelines.source]
+            type = "noop"
+            [[pipelines.transforms]]
+            type = "script"
+            runtime = "rhai"
+            script_file = "./scripts-a/enrich.rhai"
+            [[pipelines.sinks]]
+            type = "noop"
+            "#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("b.toml"),
+            r#"
+            [[pipelines]]
+            name = "pipeline-b"
+            [pipelines.source]
+            type = "noop"
+            [[pipelines.transforms]]
+            type = "script"
+            runtime = "rhai"
+            script_file = "./scripts-b/enrich.rhai"
+            [[pipelines.sinks]]
+            type = "noop"
+            "#,
+        )
+        .unwrap();
+
+        let config = Config::load(dir.path()).unwrap();
+        let by_name: std::collections::HashMap<_, _> = config
+            .pipelines
+            .iter()
+            .map(|p| (p.name.as_str(), p))
+            .collect();
+
+        let script_a = by_name["pipeline-a"].transforms[0].config["script_file"]
+            .as_str()
+            .unwrap();
+        let script_b = by_name["pipeline-b"].transforms[0].config["script_file"]
+            .as_str()
+            .unwrap();
+
+        assert!(std::path::Path::new(script_a).is_absolute(), "{script_a}");
+        assert!(std::path::Path::new(script_b).is_absolute(), "{script_b}");
+        assert_eq!(
+            script_a,
+            dir.path()
+                .join("./scripts-a/enrich.rhai")
+                .to_string_lossy()
+                .as_ref()
+        );
+        assert_eq!(
+            script_b,
+            dir.path()
+                .join("./scripts-b/enrich.rhai")
+                .to_string_lossy()
+                .as_ref()
+        );
+    }
+
+    #[test]
     fn load_directory_rejects_duplicate_pipeline_names() {
         let dir = tempfile::tempdir().unwrap();
         let body = r#"

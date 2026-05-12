@@ -7,7 +7,7 @@ icon: lucide/code
 The built-in `script` transform lets you write per-envelope logic without recompiling Courier. Three runtimes ship out of the box:
 
 - **[Rhai](rhai.md)** — small, sandboxed embedded runtime with a configurable execution budget. Best default for short, untrusted-ish snippets.
-- **[Lua](lua.md)** — embedded via `mlua`. Familiar syntax, no subprocess overhead.
+- **[Lua](lua.md)** — embedded via `mlua`. Familiar syntax, no subprocess overhead. Not sandboxed: `io`, `os`, and `package` are exposed by default; pair with `timeout_ms` and `max_operations` for any untrusted input.
 - **[Python](python.md)** — runs in a `python3` subprocess. Not sandboxed; unlocks the full Python ecosystem at the cost of process boundary overhead.
 
 ## Choosing a runtime
@@ -15,7 +15,8 @@ The built-in `script` transform lets you write per-envelope logic without recomp
 | Concern                          | Rhai    | Lua     | Python  |
 | -------------------------------- | :-----: | :-----: | :-----: |
 | Embedded (no subprocess)         | ✅      | ✅      | ❌      |
-| Sandbox / execution budget       | ✅      | ❌      | ❌      |
+| Sandboxed (no FS / OS access)    | ✅      | ❌      | ❌      |
+| Execution budget                 | ✅      | ✅      | ❌      |
 | External libraries available     | ❌      | ❌      | ✅      |
 | Cold-start cost                  | low     | low     | higher  |
 | Throughput (1 transform)[^1]     | ~489 K/s | ~210 K/s | ~22 K/s |

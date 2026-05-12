@@ -143,7 +143,7 @@ Runs a user-provided script per envelope. Three runtimes are supported:
 | Runtime | `runtime` value | Notes |
 | ------- | --------------- | ----- |
 | Rhai    | `"rhai"`        | Embedded sandboxed runtime, configurable execution budget. |
-| Lua     | `"lua"`         | Embedded via `mlua`. |
+| Lua     | `"lua"`         | Embedded via `mlua`; not sandboxed (`io`, `os`, `package` exposed). Supports `max_operations` as an instruction budget. |
 | Python  | `"python"`      | Runs in a `python3` subprocess; not sandboxed. |
 
 ```toml

@@ -51,7 +51,11 @@ Relative `script_file` paths are resolved from the config file's directory.
 
 ## Limits
 
-The Lua runtime does not expose an execution budget today. The Rhai-only limit fields (`max_operations`, `max_call_levels`, etc.) are **rejected** at config-load time when `runtime = "lua"` — the transform fails to register rather than silently ignoring them.
+Set `max_operations` to cap how many Lua VM instructions a single envelope can execute. Courier installs an `mlua` hook that fires every 1000 instructions and aborts the script once the cumulative count exceeds the budget. Unset by default (no budget).
+
+The other Rhai-only limit fields (`max_call_levels`, `max_expr_depth`, `max_function_expr_depth`, `max_variables`) are **rejected** at config-load time when `runtime = "lua"` — they have no analogue in the Lua engine, so the transform fails to register rather than silently ignoring them.
+
+See [Script Security](security.md) for the broader security model — Lua is **not** sandboxed by default (`io`, `os`, `package` are exposed). Pair `max_operations` with `timeout_ms` and OS-level isolation for untrusted scripts.
 
 ## `env` binding
 
