@@ -7,6 +7,7 @@ use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
 
 use crate::config::{parse_config, redact_secret_path};
 use crate::envelope::Envelope;
@@ -48,6 +49,12 @@ trait ScriptEngine: Send + Sync {
     /// Per-engine hook so engines can pre-build their own metric recorders.
     /// Default no-op for engines that don't record runtime-tagged metrics.
     fn set_node_ctx(&mut self, _ctx: NodeCtx) {}
+
+    /// Install the pipeline's cancellation token. Default no-op — only
+    /// engines with out-of-process or long-running workers (Python) wire
+    /// it up to kill their child on shutdown. Called by `BasicTransform`
+    /// after `set_node_ctx`, before the run loop starts.
+    fn set_cancel(&mut self, _cancel: CancellationToken) {}
 }
 
 /// Which side of the engine call a payload-size check applies to.
@@ -148,6 +155,10 @@ impl<E: ScriptEngine> MapOne for ScriptMapOne<E> {
                 .set(ctx.script_payload_too_large_recorder(self.runtime, DIR_OUT));
         }
         self.engine.set_node_ctx(ctx);
+    }
+
+    fn set_cancel(&mut self, cancel: CancellationToken) {
+        self.engine.set_cancel(cancel);
     }
 }
 

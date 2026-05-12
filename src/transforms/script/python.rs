@@ -9,6 +9,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio::task;
 use tokio::time;
+use tokio_util::sync::CancellationToken;
 
 use crate::config::redact_secret;
 use crate::envelope::Envelope;
@@ -18,11 +19,24 @@ use super::{ScriptEngine, ScriptTimeoutError, ScriptTransformConfig};
 
 const PYTHON_BOOTSTRAP: &str = r#"
 import json
+import os
 import sys
 import traceback
 
 entrypoint_name = sys.argv[1]
 namespace = {}
+
+# Reserve a private fd for the framing protocol BEFORE running any user
+# code. The user's `sys.stdout` then gets pointed at stderr so a stray
+# `print("debug")` in the script can't interleave into the JSON line
+# stream the Rust parent is parsing.
+_protocol_fd = os.dup(1)
+_protocol = os.fdopen(_protocol_fd, "w", buffering=1)
+sys.stdout = os.fdopen(os.dup(2), "w", buffering=1)
+
+def _send(obj):
+    _protocol.write(json.dumps(obj) + "\n")
+    _protocol.flush()
 
 try:
     script = json.loads(sys.stdin.readline())
@@ -30,11 +44,9 @@ try:
     entrypoint = namespace.get(entrypoint_name)
     if not callable(entrypoint):
         raise RuntimeError(f"missing Python entrypoint '{entrypoint_name}'")
-    sys.stdout.write(json.dumps({"ok": True, "ready": True}) + "\n")
-    sys.stdout.flush()
+    _send({"ok": True, "ready": True})
 except Exception:
-    sys.stdout.write(json.dumps({"ok": False, "error": traceback.format_exc()}) + "\n")
-    sys.stdout.flush()
+    _send({"ok": False, "error": traceback.format_exc()})
     raise SystemExit(1)
 
 for line in sys.stdin:
@@ -51,8 +63,7 @@ for line in sys.stdin:
     except Exception:
         response = {"ok": False, "error": traceback.format_exc()}
 
-    sys.stdout.write(json.dumps(response) + "\n")
-    sys.stdout.flush()
+    _send(response)
 "#;
 
 pub struct PythonEngine {
@@ -67,6 +78,10 @@ pub struct PythonEngine {
     child: Arc<Mutex<Option<Child>>>,
     timeout: Option<Duration>,
     timeout_recorder: OnceLock<ScriptTimeoutRecorder>,
+    /// Kill-switch for the monitor task. `Drop` fires it so the task exits
+    /// before subprocess cleanup begins — preventing a race where the monitor
+    /// observes the pipeline cancel and tries to kill an already-dead child.
+    monitor_shutdown: CancellationToken,
 }
 
 struct PythonSpawnConfig {
@@ -148,6 +163,29 @@ impl ScriptEngine for PythonEngine {
             .timeout_recorder
             .set(ctx.script_timeout_recorder("python"));
     }
+
+    fn set_cancel(&mut self, cancel: CancellationToken) {
+        // Spawn a monitor task that fires on either the pipeline cancel
+        // or the engine's own shutdown token (used by `Drop`). On cancel
+        // it kills the subprocess and drops the IO half; an in-flight
+        // `run_python_call` then observes EOF on stdout and surfaces an
+        // error, so the BasicTransform loop unblocks instead of waiting
+        // on a hung script until `Drop` runs.
+        let child = Arc::clone(&self.child);
+        let io = Arc::clone(&self.io);
+        let shutdown = self.monitor_shutdown.clone();
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = cancel.cancelled() => {
+                    kill_child(&child);
+                    if let Ok(mut g) = io.lock() {
+                        *g = None;
+                    }
+                }
+                _ = shutdown.cancelled() => {}
+            }
+        });
+    }
 }
 
 impl PythonEngine {
@@ -173,6 +211,7 @@ impl PythonEngine {
             child: Arc::new(Mutex::new(Some(child))),
             timeout: config.timeout,
             timeout_recorder: OnceLock::new(),
+            monitor_shutdown: CancellationToken::new(),
         })
     }
 
@@ -329,6 +368,9 @@ fn kill_child(child: &Mutex<Option<Child>>) {
 
 impl Drop for PythonEngine {
     fn drop(&mut self) {
+        // Cancel the monitor task first so it doesn't observe the
+        // pipeline cancel and race with this cleanup.
+        self.monitor_shutdown.cancel();
         kill_child(&self.child);
         // Best-effort cleanup of the IO half so its descriptors close
         // and Python sees EOF if it somehow outlived the kill.
@@ -555,6 +597,76 @@ def transform(env):
             .expect("expected missing interpreter error");
         let msg = format!("{err:#}");
         assert!(msg.contains("failed to spawn Python interpreter"), "{msg}");
+    }
+
+    #[test]
+    fn user_print_does_not_corrupt_protocol() {
+        // The bootstrap reserves a private fd for the framing protocol
+        // and points sys.stdout at stderr. Without that, this `print`
+        // would inject "debug\n" between the Rust parent's expected JSON
+        // responses and the next read would fail to parse.
+        let engine = PythonEngine::new(&config(
+            r#"
+
+def transform(env):
+    print("debug-line-one")
+    print("debug-line-two")
+    env["payload"]["seen"] = True
+    return env
+"#,
+        ))
+        .unwrap();
+
+        // Run twice — first call's stray print would corrupt the second
+        // call's response if the protocol channel wasn't isolated.
+        for _ in 0..2 {
+            let out = engine
+                .run_sync(Envelope::new("src", json!({})))
+                .unwrap()
+                .unwrap();
+            assert_eq!(out.payload, json!({ "seen": true }));
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pipeline_cancel_kills_python_subprocess() {
+        use super::ScriptEngine;
+        use tokio_util::sync::CancellationToken;
+
+        // No timeout — we want to prove that the cancel-driven monitor
+        // alone is enough to unblock a hanging script.
+        let mut engine = PythonEngine::new(&config(
+            r#"
+import time
+
+def transform(env):
+    while True:
+        time.sleep(0.05)
+"#,
+        ))
+        .unwrap();
+
+        let token = CancellationToken::new();
+        engine.set_cancel(token.clone());
+
+        let started = std::time::Instant::now();
+        let run_fut =
+            tokio::spawn(async move { engine.run(Envelope::new("src", json!({}))).await });
+
+        // Give the script a moment to be in its hang loop, then cancel.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        token.cancel();
+
+        let result = tokio::time::timeout(Duration::from_secs(5), run_fut)
+            .await
+            .expect("cancellation must unblock the hanging Python call")
+            .expect("run task must not panic");
+        assert!(result.is_err(), "expected error after cancel kill");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "cancel kill must be prompt, took {:?}",
+            started.elapsed()
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

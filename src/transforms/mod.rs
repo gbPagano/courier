@@ -57,6 +57,13 @@ pub trait MapOne: Send + Sync {
     /// record per-runtime metrics. Default no-op — script engines use it
     /// to pre-build counter recorders.
     fn set_node_ctx(&mut self, _ctx: NodeCtx) {}
+
+    /// Hook called by `BasicTransform::run` once, before the recv loop,
+    /// so wrapped maps can react to pipeline cancellation outside their
+    /// per-envelope `map` call. Default no-op — the only current user is
+    /// the script Python engine, which uses it to kill its out-of-process
+    /// worker on shutdown.
+    fn set_cancel(&mut self, _cancel: CancellationToken) {}
 }
 
 /// Adapter that turns any `MapOne` into a `Transform`.
@@ -93,11 +100,16 @@ impl<M: MapOne + 'static> Transform for BasicTransform<M> {
     }
 
     async fn run(
-        self: Box<Self>,
+        mut self: Box<Self>,
         mut rx: Receiver<Envelope>,
         tx: Sender<Envelope>,
         cancel: CancellationToken,
     ) {
+        // Plumb the pipeline cancel token down to the wrapped map once
+        // before the loop starts. Most MapOnes ignore it; the script
+        // Python engine wires it to a watchdog that kills the subprocess
+        // on shutdown so a hung script can't outlive the pipeline.
+        self.inner.set_cancel(cancel.clone());
         let id = self.inner.id().to_string();
         let ctx = self.node_ctx;
         loop {
