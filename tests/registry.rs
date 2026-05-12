@@ -540,10 +540,7 @@ async fn built_in_python_script_transform_rejects_rhai_limits() {
         .expect("expected Python Rhai-limit validation error");
 
     let msg = format!("{err:#}");
-    assert!(
-        msg.contains("Rhai-only limits") && msg.contains("runtime 'python'"),
-        "{msg}"
-    );
+    assert!(msg.contains("not supported for runtime 'python'"), "{msg}");
 }
 
 #[tokio::test]

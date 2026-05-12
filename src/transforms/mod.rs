@@ -52,6 +52,11 @@ pub trait MapOne: Send + Sync {
     fn id(&self) -> &str;
 
     async fn map(&self, env: Envelope) -> Result<Option<Envelope>>;
+
+    /// Hook called by `BasicTransform::set_node_ctx` so wrapped maps can
+    /// record per-runtime metrics. Default no-op — script engines use it
+    /// to pre-build counter recorders.
+    fn set_node_ctx(&mut self, _ctx: NodeCtx) {}
 }
 
 /// Adapter that turns any `MapOne` into a `Transform`.
@@ -83,6 +88,7 @@ impl<M: MapOne + 'static> Transform for BasicTransform<M> {
     }
 
     fn set_node_ctx(&mut self, ctx: NodeCtx) {
+        self.inner.set_node_ctx(ctx.clone());
         self.node_ctx = ctx;
     }
 

@@ -79,6 +79,7 @@ struct Instruments {
     retries: Counter<u64>,
     dead_lettered: Counter<u64>,
     dropped: Counter<u64>,
+    script_timeouts: Counter<u64>,
     stage_duration: Histogram<f64>,
     end_to_end_latency: Histogram<f64>,
     channel_capacity_used: Histogram<u64>,
@@ -139,6 +140,10 @@ impl ObsHandle {
             dropped: meter
                 .u64_counter("courier_envelopes_dropped_total")
                 .with_description("Envelopes dropped by the fan-out splitter because the downstream channel was full or closed.")
+                .build(),
+            script_timeouts: meter
+                .u64_counter("courier_script_timeouts_total")
+                .with_description("Script transform invocations aborted because they exceeded the configured per-envelope timeout.")
                 .build(),
             stage_duration: meter
                 .f64_histogram("courier_stage_duration_milliseconds")
@@ -327,6 +332,19 @@ impl NodeCtx {
         }
     }
 
+    /// Precompute a recorder for `courier_script_timeouts_total` bound to
+    /// a fixed script `runtime` ("rhai", "lua", "python"). Built once by
+    /// the engine in `set_node_ctx` so the hot path doesn't rebuild the
+    /// attribute slice.
+    pub fn script_timeout_recorder(&self, runtime: &'static str) -> ScriptTimeoutRecorder {
+        let mut attrs: Vec<KeyValue> = self.attrs.iter().cloned().collect();
+        attrs.push(KeyValue::new("runtime", runtime));
+        ScriptTimeoutRecorder {
+            handle: self.handle.clone(),
+            attrs: Arc::from(attrs.as_slice()),
+        }
+    }
+
     pub fn record_stage_duration_ms(&self, ms: f64) {
         self.handle
             .inner
@@ -364,6 +382,24 @@ pub struct DroppedRecorder {
 impl DroppedRecorder {
     pub fn record(&self) {
         self.handle.inner.instruments.dropped.add(1, &self.attrs);
+    }
+}
+
+/// Reusable handle for counting script transform timeouts at a fixed
+/// `runtime`. Built once via [`NodeCtx::script_timeout_recorder`].
+#[derive(Clone)]
+pub struct ScriptTimeoutRecorder {
+    handle: ObsHandle,
+    attrs: Arc<[KeyValue]>,
+}
+
+impl ScriptTimeoutRecorder {
+    pub fn record(&self) {
+        self.handle
+            .inner
+            .instruments
+            .script_timeouts
+            .add(1, &self.attrs);
     }
 }
 

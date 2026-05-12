@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
@@ -7,6 +8,7 @@ use serde_json::Value;
 
 use crate::config::{parse_config, redact_secret_path};
 use crate::envelope::Envelope;
+use crate::observability::NodeCtx;
 use crate::pipeline::ErrorPolicy;
 use crate::transforms::{BasicTransform, MapOne, Transform};
 
@@ -14,9 +16,23 @@ pub mod lua;
 pub mod python;
 pub mod rhai;
 
+/// Marker error for "script exceeded its configured per-envelope timeout".
+/// Engines return this so the transform loop's `record_failed` and the
+/// engine-level `script_timeouts_total` counter both fire, and an operator
+/// log can distinguish a timeout from a generic runtime failure.
+#[derive(Debug, thiserror::Error)]
+#[error("script transform exceeded timeout of {timeout_ms} ms")]
+pub struct ScriptTimeoutError {
+    pub timeout_ms: u64,
+}
+
 #[async_trait]
 trait ScriptEngine: Send + Sync {
     async fn run(&self, env: Envelope) -> Result<Option<Envelope>>;
+
+    /// Per-engine hook so engines can pre-build their own metric recorders.
+    /// Default no-op for engines that don't record runtime-tagged metrics.
+    fn set_node_ctx(&mut self, _ctx: NodeCtx) {}
 }
 
 struct ScriptMapOne<E: ScriptEngine> {
@@ -42,6 +58,10 @@ impl<E: ScriptEngine> MapOne for ScriptMapOne<E> {
     async fn map(&self, env: Envelope) -> Result<Option<Envelope>> {
         self.engine.run(env).await
     }
+
+    fn set_node_ctx(&mut self, ctx: NodeCtx) {
+        self.engine.set_node_ctx(ctx);
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -63,6 +83,13 @@ struct RawScriptTransformConfig {
     entrypoint: String,
     #[serde(default)]
     python_bin: Option<String>,
+    /// Per-envelope timeout, in milliseconds. Applies to every script
+    /// runtime. `None` (default) disables the timeout — backwards-
+    /// compatible with the existing Rhai/Lua/Python configs.
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+    /// Maximum script operations (Rhai) or VM instructions (Lua).
+    /// Rejected for `runtime = "python"`.
     #[serde(default)]
     max_operations: Option<u64>,
     #[serde(default)]
@@ -78,6 +105,14 @@ struct RawScriptTransformConfig {
 #[derive(Debug, Clone)]
 struct PythonConfig {
     bin: String,
+}
+
+#[derive(Debug, Clone)]
+struct LuaConfig {
+    /// When `Some`, install an `mlua` hook that fires every N instructions
+    /// and aborts the script if the cumulative count exceeds this budget
+    /// (or if the timeout watchdog signals cancellation).
+    max_operations: Option<u64>,
 }
 
 fn default_python_bin() -> String {
@@ -105,8 +140,12 @@ struct ScriptTransformConfig {
     runtime: ScriptRuntime,
     script: String,
     entrypoint: String,
+    /// Wall-clock budget for a single envelope. Enforced by each engine.
+    /// `None` = disabled.
+    timeout: Option<Duration>,
     python: Option<PythonConfig>,
     rhai: Option<RhaiConfig>,
+    lua: Option<LuaConfig>,
 }
 
 impl RawScriptTransformConfig {
@@ -117,6 +156,7 @@ impl RawScriptTransformConfig {
             script_file,
             entrypoint,
             python_bin,
+            timeout_ms,
             max_operations,
             max_call_levels,
             max_expr_depth,
@@ -137,60 +177,76 @@ impl RawScriptTransformConfig {
             })?,
         };
 
-        let has_rhai_limits = max_operations.is_some()
-            || max_call_levels.is_some()
+        let timeout = match timeout_ms {
+            Some(0) => bail!("script transform: 'timeout_ms' must be > 0 when set"),
+            Some(ms) => Some(Duration::from_millis(ms)),
+            None => None,
+        };
+
+        // Knobs other than `max_operations` are Rhai-only — they map
+        // to depth and variable budgets in the Rhai engine and have
+        // no analogue in Lua or the Python worker.
+        let has_rhai_only_limits = max_call_levels.is_some()
             || max_expr_depth.is_some()
             || max_function_expr_depth.is_some()
             || max_variables.is_some();
 
-        let python = match runtime {
+        let (python, lua, rhai) = match runtime {
             ScriptRuntime::Python => {
-                if has_rhai_limits {
+                if has_rhai_only_limits || max_operations.is_some() {
                     bail!(
-                        "script transform: Rhai-only limits (max_operations, max_call_levels, max_expr_depth, max_function_expr_depth, max_variables) are not supported for runtime 'python'"
+                        "script transform: limits (max_operations, max_call_levels, max_expr_depth, max_function_expr_depth, max_variables) are not supported for runtime 'python'"
                     );
                 }
-                Some(PythonConfig {
-                    bin: resolve_python_bin(python_bin),
-                })
+                (
+                    Some(PythonConfig {
+                        bin: resolve_python_bin(python_bin),
+                    }),
+                    None,
+                    None,
+                )
             }
             ScriptRuntime::Lua => {
-                if has_rhai_limits {
+                if has_rhai_only_limits {
                     bail!(
-                        "script transform: Rhai-only limits (max_operations, max_call_levels, max_expr_depth, max_function_expr_depth, max_variables) are not supported for runtime 'lua'"
+                        "script transform: Rhai-only limits (max_call_levels, max_expr_depth, max_function_expr_depth, max_variables) are not supported for runtime 'lua'"
                     );
                 }
                 if python_bin.is_some() {
                     bail!("script transform: 'python_bin' is only supported for runtime 'python'");
                 }
-                None
+                if let Some(0) = max_operations {
+                    bail!("script transform: 'max_operations' must be > 0 when set");
+                }
+                (None, Some(LuaConfig { max_operations }), None)
             }
             ScriptRuntime::Rhai => {
                 if python_bin.is_some() {
                     bail!("script transform: 'python_bin' is only supported for runtime 'python'");
                 }
-                None
+                (
+                    None,
+                    None,
+                    Some(RhaiConfig {
+                        max_operations: max_operations.unwrap_or_else(default_max_operations),
+                        max_call_levels: max_call_levels.unwrap_or_else(default_max_call_levels),
+                        max_expr_depth: max_expr_depth.unwrap_or_else(default_max_expr_depth),
+                        max_function_expr_depth: max_function_expr_depth
+                            .unwrap_or_else(default_max_function_expr_depth),
+                        max_variables: max_variables.unwrap_or_else(default_max_variables),
+                    }),
+                )
             }
-        };
-
-        let rhai = match runtime {
-            ScriptRuntime::Rhai => Some(RhaiConfig {
-                max_operations: max_operations.unwrap_or_else(default_max_operations),
-                max_call_levels: max_call_levels.unwrap_or_else(default_max_call_levels),
-                max_expr_depth: max_expr_depth.unwrap_or_else(default_max_expr_depth),
-                max_function_expr_depth: max_function_expr_depth
-                    .unwrap_or_else(default_max_function_expr_depth),
-                max_variables: max_variables.unwrap_or_else(default_max_variables),
-            }),
-            ScriptRuntime::Lua | ScriptRuntime::Python => None,
         };
 
         Ok(ScriptTransformConfig {
             runtime,
             script,
             entrypoint,
+            timeout,
             python,
             rhai,
+            lua,
         })
     }
 }
@@ -426,7 +482,29 @@ mod tests {
     }
 
     #[test]
-    fn factory_rejects_rhai_limits_for_lua() {
+    fn factory_accepts_max_operations_for_lua() {
+        // max_operations is shared with Lua (used as an instruction
+        // budget via the mlua hook). The other Rhai knobs remain
+        // Rhai-only — see `factory_rejects_rhai_only_limits_for_lua`.
+        let registry = Registry::with_builtins().unwrap();
+        registry
+            .build_transform(
+                "p/t0",
+                TransformSpec {
+                    kind: "script".into(),
+                    config: json!({
+                        "runtime": "lua",
+                        "script": "function transform(env) return env end",
+                        "max_operations": 100_000,
+                    }),
+                    on_error: None,
+                },
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn factory_rejects_rhai_only_limits_for_lua() {
         let registry = Registry::with_builtins().unwrap();
         let err = registry
             .build_transform(
@@ -436,13 +514,13 @@ mod tests {
                     config: json!({
                         "runtime": "lua",
                         "script": "function transform(env) return env end",
-                        "max_operations": 1,
+                        "max_call_levels": 1,
                     }),
                     on_error: None,
                 },
             )
             .err()
-            .expect("expected Lua Rhai-limit validation error");
+            .expect("expected Lua Rhai-only limit validation error");
         let msg = format!("{err:#}");
         assert!(
             msg.contains("Rhai-only limits") && msg.contains("runtime 'lua'"),
@@ -491,7 +569,7 @@ mod tests {
     }
 
     #[test]
-    fn factory_rejects_rhai_limits_for_python() {
+    fn factory_rejects_limits_for_python() {
         let registry = Registry::with_builtins().unwrap();
         let err = registry
             .build_transform(
@@ -507,12 +585,9 @@ mod tests {
                 },
             )
             .err()
-            .expect("expected Python Rhai-limit validation error");
+            .expect("expected Python limit validation error");
         let msg = format!("{err:#}");
-        assert!(
-            msg.contains("Rhai-only limits") && msg.contains("runtime 'python'"),
-            "{msg}"
-        );
+        assert!(msg.contains("not supported for runtime 'python'"), "{msg}");
     }
 
     #[test]
@@ -538,6 +613,42 @@ mod tests {
             msg.contains("'python_bin' is only supported for runtime 'python'"),
             "{msg}"
         );
+    }
+
+    #[test]
+    fn factory_rejects_zero_timeout_ms() {
+        let registry = Registry::with_builtins().unwrap();
+        for runtime in ["rhai", "lua", "python"] {
+            let script = if runtime == "python" {
+                "def transform(env):\n    return env\n"
+            } else if runtime == "lua" {
+                "function transform(env) return env end"
+            } else {
+                "fn transform(env) { env }"
+            };
+            let err = registry
+                .build_transform(
+                    "p/t0",
+                    TransformSpec {
+                        kind: "script".into(),
+                        config: json!({
+                            "runtime": runtime,
+                            "script": script,
+                            "timeout_ms": 0,
+                        }),
+                        on_error: None,
+                    },
+                )
+                .err()
+                .unwrap_or_else(|| {
+                    panic!("expected timeout_ms=0 rejection for runtime '{runtime}'")
+                });
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("'timeout_ms' must be > 0"),
+                "runtime '{runtime}': {msg}"
+            );
+        }
     }
 
     #[test]

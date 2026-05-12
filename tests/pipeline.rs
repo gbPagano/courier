@@ -511,6 +511,331 @@ async fn script_transform_fail_pipeline_stops_after_error() {
     assert!(capture.handle().lock().unwrap().is_empty());
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn script_transform_timeout_with_drop_policy_continues() {
+    let mut registry = Registry::default();
+    register_builtin(&mut registry).unwrap();
+
+    let capture = CollectingSink::new("dst");
+    let store = capture.handle();
+    registry
+        .register_source("vec", |id: &str, _, _| {
+            Ok(Box::new(VecSource::new(
+                id,
+                vec![
+                    Envelope::new(id, json!({ "hang": true, "value": 1 })),
+                    Envelope::new(id, json!({ "hang": false, "value": 2 })),
+                ],
+            )) as Box<dyn Source>)
+        })
+        .unwrap();
+    registry
+        .register_sink("capture", move |id: &str, _, _, _| {
+            Ok(Box::new(ManagedSink::new(CollectingSink::from_store(
+                id,
+                store.clone(),
+            ))) as Box<dyn courier::sinks::Sink>)
+        })
+        .unwrap();
+
+    let courier = registry
+        .build_courier(Config {
+            observability: None,
+            health: None,
+            shutdown: None,
+            pipelines: vec![PipelineSpec {
+                name: "timeout-drop".into(),
+                source: SourceSpec {
+                    kind: "vec".into(),
+                    config: json!({}),
+                    retry: None,
+                },
+                transforms: vec![TransformSpec {
+                    kind: "script".into(),
+                    config: json!({
+                        "runtime": "rhai",
+                        "timeout_ms": 50,
+                        // Give the runaway loop enough operations budget that
+                        // the watchdog, not the per-script operation cap, is
+                        // what aborts it.
+                        "max_operations": 10_000_000_000u64,
+                        "script": r#"
+                            fn transform(env) {
+                                if env.payload["hang"] == true {
+                                    while true {}
+                                }
+                                env.payload["processed"] = true;
+                                env
+                            }
+                        "#,
+                    }),
+                    on_error: Some(ErrorPolicyConfig::Drop),
+                }],
+                sinks: vec![SinkSpec {
+                    kind: "capture".into(),
+                    config: json!({}),
+                    on_error: None,
+                    retry: None,
+                }],
+                channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
+            }],
+        })
+        .unwrap();
+
+    let (handles, _state) = courier.spawn(CancellationToken::new());
+    join_all(handles).await;
+
+    let items = capture.handle();
+    let items = items.lock().unwrap();
+    assert_eq!(
+        items.len(),
+        1,
+        "only the non-hanging envelope should survive"
+    );
+    assert_eq!(
+        items[0].payload,
+        json!({ "hang": false, "value": 2, "processed": true })
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn script_transform_timeout_with_fail_pipeline_stops() {
+    let mut registry = Registry::default();
+    register_builtin(&mut registry).unwrap();
+
+    let capture = CollectingSink::new("dst");
+    let store = capture.handle();
+    registry
+        .register_source("vec", |id: &str, _, _| {
+            Ok(Box::new(VecSource::new(
+                id,
+                vec![
+                    Envelope::new(id, json!({ "hang": true })),
+                    Envelope::new(id, json!({ "hang": false })),
+                ],
+            )) as Box<dyn Source>)
+        })
+        .unwrap();
+    registry
+        .register_sink("capture", move |id: &str, _, _, _| {
+            Ok(Box::new(ManagedSink::new(CollectingSink::from_store(
+                id,
+                store.clone(),
+            ))) as Box<dyn courier::sinks::Sink>)
+        })
+        .unwrap();
+
+    let courier = registry
+        .build_courier(Config {
+            observability: None,
+            health: None,
+            shutdown: None,
+            pipelines: vec![PipelineSpec {
+                name: "timeout-fail".into(),
+                source: SourceSpec {
+                    kind: "vec".into(),
+                    config: json!({}),
+                    retry: None,
+                },
+                transforms: vec![TransformSpec {
+                    kind: "script".into(),
+                    config: json!({
+                        "runtime": "rhai",
+                        "timeout_ms": 50,
+                        "max_operations": 10_000_000_000u64,
+                        "script": r#"
+                            fn transform(env) {
+                                if env.payload["hang"] == true {
+                                    while true {}
+                                }
+                                env
+                            }
+                        "#,
+                    }),
+                    on_error: Some(ErrorPolicyConfig::FailPipeline),
+                }],
+                sinks: vec![SinkSpec {
+                    kind: "capture".into(),
+                    config: json!({}),
+                    on_error: None,
+                    retry: None,
+                }],
+                channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
+            }],
+        })
+        .unwrap();
+
+    let (handles, _state) = courier.spawn(CancellationToken::new());
+    join_all(handles).await;
+
+    assert!(
+        capture.handle().lock().unwrap().is_empty(),
+        "pipeline must be cancelled before any envelope reaches the sink"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lua_script_transform_timeout_with_drop_policy_continues() {
+    let mut registry = Registry::default();
+    register_builtin(&mut registry).unwrap();
+
+    let capture = CollectingSink::new("dst");
+    let store = capture.handle();
+    registry
+        .register_source("vec", |id: &str, _, _| {
+            Ok(Box::new(VecSource::new(
+                id,
+                vec![
+                    Envelope::new(id, json!({ "hang": true, "value": 1 })),
+                    Envelope::new(id, json!({ "hang": false, "value": 2 })),
+                ],
+            )) as Box<dyn Source>)
+        })
+        .unwrap();
+    registry
+        .register_sink("capture", move |id: &str, _, _, _| {
+            Ok(Box::new(ManagedSink::new(CollectingSink::from_store(
+                id,
+                store.clone(),
+            ))) as Box<dyn courier::sinks::Sink>)
+        })
+        .unwrap();
+
+    let courier = registry
+        .build_courier(Config {
+            observability: None,
+            health: None,
+            shutdown: None,
+            pipelines: vec![PipelineSpec {
+                name: "lua-timeout-drop".into(),
+                source: SourceSpec {
+                    kind: "vec".into(),
+                    config: json!({}),
+                    retry: None,
+                },
+                transforms: vec![TransformSpec {
+                    kind: "script".into(),
+                    config: json!({
+                        "runtime": "lua",
+                        "timeout_ms": 50,
+                        "script": r#"
+                            function transform(env)
+                                if env.payload.hang then
+                                    while true do end
+                                end
+                                env.payload.processed = true
+                                return env
+                            end
+                        "#,
+                    }),
+                    on_error: Some(ErrorPolicyConfig::Drop),
+                }],
+                sinks: vec![SinkSpec {
+                    kind: "capture".into(),
+                    config: json!({}),
+                    on_error: None,
+                    retry: None,
+                }],
+                channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
+            }],
+        })
+        .unwrap();
+
+    let (handles, _state) = courier.spawn(CancellationToken::new());
+    join_all(handles).await;
+
+    let items = capture.handle();
+    let items = items.lock().unwrap();
+    assert_eq!(
+        items.len(),
+        1,
+        "only the non-hanging envelope should survive"
+    );
+    assert_eq!(
+        items[0].payload,
+        json!({ "hang": false, "value": 2, "processed": true })
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lua_script_transform_timeout_with_fail_pipeline_stops() {
+    let mut registry = Registry::default();
+    register_builtin(&mut registry).unwrap();
+
+    let capture = CollectingSink::new("dst");
+    let store = capture.handle();
+    registry
+        .register_source("vec", |id: &str, _, _| {
+            Ok(Box::new(VecSource::new(
+                id,
+                vec![
+                    Envelope::new(id, json!({ "hang": true })),
+                    Envelope::new(id, json!({ "hang": false })),
+                ],
+            )) as Box<dyn Source>)
+        })
+        .unwrap();
+    registry
+        .register_sink("capture", move |id: &str, _, _, _| {
+            Ok(Box::new(ManagedSink::new(CollectingSink::from_store(
+                id,
+                store.clone(),
+            ))) as Box<dyn courier::sinks::Sink>)
+        })
+        .unwrap();
+
+    let courier = registry
+        .build_courier(Config {
+            observability: None,
+            health: None,
+            shutdown: None,
+            pipelines: vec![PipelineSpec {
+                name: "lua-timeout-fail".into(),
+                source: SourceSpec {
+                    kind: "vec".into(),
+                    config: json!({}),
+                    retry: None,
+                },
+                transforms: vec![TransformSpec {
+                    kind: "script".into(),
+                    config: json!({
+                        "runtime": "lua",
+                        "timeout_ms": 50,
+                        "script": r#"
+                            function transform(env)
+                                if env.payload.hang then
+                                    while true do end
+                                end
+                                return env
+                            end
+                        "#,
+                    }),
+                    on_error: Some(ErrorPolicyConfig::FailPipeline),
+                }],
+                sinks: vec![SinkSpec {
+                    kind: "capture".into(),
+                    config: json!({}),
+                    on_error: None,
+                    retry: None,
+                }],
+                channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
+            }],
+        })
+        .unwrap();
+
+    let (handles, _state) = courier.spawn(CancellationToken::new());
+    join_all(handles).await;
+
+    assert!(
+        capture.handle().lock().unwrap().is_empty(),
+        "pipeline must be cancelled before any envelope reaches the sink"
+    );
+}
+
 #[tokio::test]
 async fn lua_script_transform_end_to_end() {
     let mut registry = Registry::default();

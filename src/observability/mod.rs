@@ -30,7 +30,7 @@ pub mod metrics;
 pub mod source_ctx;
 pub mod trace_context;
 
-pub use metrics::{NodeCtx, NodeKind, ObsHandle, init_metrics};
+pub use metrics::{NodeCtx, NodeKind, ObsHandle, ScriptTimeoutRecorder, init_metrics};
 pub use source_ctx::{SendStopped, SourceCtx};
 
 static INIT: Once = Once::new();
