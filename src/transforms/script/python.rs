@@ -356,6 +356,8 @@ mod tests {
             script: script.into(),
             entrypoint: entrypoint.into(),
             timeout: None,
+            max_payload_bytes_in: None,
+            max_payload_bytes_out: None,
             python: Some(PythonConfig {
                 bin: "python3".into(),
             }),

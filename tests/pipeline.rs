@@ -511,6 +511,158 @@ async fn script_transform_fail_pipeline_stops_after_error() {
     assert!(capture.handle().lock().unwrap().is_empty());
 }
 
+#[tokio::test]
+async fn script_transform_oversized_in_envelope_dropped() {
+    let mut registry = Registry::default();
+    register_builtin(&mut registry).unwrap();
+
+    let capture = CollectingSink::new("dst");
+    let store = capture.handle();
+    let big = "x".repeat(1024);
+    registry
+        .register_source("vec", move |id: &str, _, _| {
+            Ok(Box::new(VecSource::new(
+                id,
+                vec![
+                    Envelope::new(id, json!({ "blob": big.clone() })),
+                    Envelope::new(id, json!({ "value": 1 })),
+                ],
+            )) as Box<dyn Source>)
+        })
+        .unwrap();
+    registry
+        .register_sink("capture", move |id: &str, _, _, _| {
+            Ok(Box::new(ManagedSink::new(CollectingSink::from_store(
+                id,
+                store.clone(),
+            ))) as Box<dyn courier::sinks::Sink>)
+        })
+        .unwrap();
+
+    let courier = registry
+        .build_courier(Config {
+            observability: None,
+            health: None,
+            shutdown: None,
+            pipelines: vec![PipelineSpec {
+                name: "size-drop".into(),
+                source: SourceSpec {
+                    kind: "vec".into(),
+                    config: json!({}),
+                    retry: None,
+                },
+                transforms: vec![TransformSpec {
+                    kind: "script".into(),
+                    config: json!({
+                        "runtime": "rhai",
+                        "max_payload_bytes_in": 256,
+                        "script": "fn transform(env) { env.payload[\"seen\"] = true; env }",
+                    }),
+                    on_error: Some(ErrorPolicyConfig::Drop),
+                }],
+                sinks: vec![SinkSpec {
+                    kind: "capture".into(),
+                    config: json!({}),
+                    on_error: None,
+                    retry: None,
+                }],
+                channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
+            }],
+        })
+        .unwrap();
+
+    let (handles, _state) = courier.spawn(CancellationToken::new());
+    join_all(handles).await;
+
+    let items = capture.handle();
+    let items = items.lock().unwrap();
+    assert_eq!(items.len(), 1, "only the small envelope should survive");
+    assert_eq!(items[0].payload, json!({ "value": 1, "seen": true }));
+}
+
+#[tokio::test]
+async fn script_transform_inflated_out_envelope_dropped() {
+    let mut registry = Registry::default();
+    register_builtin(&mut registry).unwrap();
+
+    let capture = CollectingSink::new("dst");
+    let store = capture.handle();
+    registry
+        .register_source("vec", |id: &str, _, _| {
+            Ok(Box::new(VecSource::new(
+                id,
+                vec![
+                    Envelope::new(id, json!({ "inflate": true })),
+                    Envelope::new(id, json!({ "value": 2 })),
+                ],
+            )) as Box<dyn Source>)
+        })
+        .unwrap();
+    registry
+        .register_sink("capture", move |id: &str, _, _, _| {
+            Ok(Box::new(ManagedSink::new(CollectingSink::from_store(
+                id,
+                store.clone(),
+            ))) as Box<dyn courier::sinks::Sink>)
+        })
+        .unwrap();
+
+    let courier = registry
+        .build_courier(Config {
+            observability: None,
+            health: None,
+            shutdown: None,
+            pipelines: vec![PipelineSpec {
+                name: "out-drop".into(),
+                source: SourceSpec {
+                    kind: "vec".into(),
+                    config: json!({}),
+                    retry: None,
+                },
+                transforms: vec![TransformSpec {
+                    kind: "script".into(),
+                    config: json!({
+                        "runtime": "rhai",
+                        "max_payload_bytes_out": 64,
+                        "script": r#"
+                            fn transform(env) {
+                                if env.payload["inflate"] == true {
+                                    let s = "";
+                                    for _i in 0..200 { s += "z"; }
+                                    env.payload["blob"] = s;
+                                }
+                                env
+                            }
+                        "#,
+                    }),
+                    on_error: Some(ErrorPolicyConfig::Drop),
+                }],
+                sinks: vec![SinkSpec {
+                    kind: "capture".into(),
+                    config: json!({}),
+                    on_error: None,
+                    retry: None,
+                }],
+                channel_capacity: None,
+                fan_out: FanOutPolicyConfig::default(),
+            }],
+        })
+        .unwrap();
+
+    let (handles, _state) = courier.spawn(CancellationToken::new());
+    join_all(handles).await;
+
+    let items = capture.handle();
+    let items = items.lock().unwrap();
+    assert_eq!(
+        items.len(),
+        1,
+        "only the non-inflated envelope should survive"
+    );
+    assert_eq!(items[0].payload, json!({ "value": 2 }));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn script_transform_timeout_with_drop_policy_continues() {
     let mut registry = Registry::default();

@@ -209,6 +209,8 @@ mod tests {
             script: script.into(),
             entrypoint: "transform".into(),
             timeout: None,
+            max_payload_bytes_in: None,
+            max_payload_bytes_out: None,
             python: None,
             rhai: None,
             lua: Some(LuaConfig {

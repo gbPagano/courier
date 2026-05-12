@@ -80,6 +80,7 @@ struct Instruments {
     dead_lettered: Counter<u64>,
     dropped: Counter<u64>,
     script_timeouts: Counter<u64>,
+    script_payload_too_large: Counter<u64>,
     stage_duration: Histogram<f64>,
     end_to_end_latency: Histogram<f64>,
     channel_capacity_used: Histogram<u64>,
@@ -144,6 +145,10 @@ impl ObsHandle {
             script_timeouts: meter
                 .u64_counter("courier_script_timeouts_total")
                 .with_description("Script transform invocations aborted because they exceeded the configured per-envelope timeout.")
+                .build(),
+            script_payload_too_large: meter
+                .u64_counter("courier_script_payload_too_large_total")
+                .with_description("Envelopes rejected by a script transform because their serialized size exceeded a configured size guardrail.")
                 .build(),
             stage_duration: meter
                 .f64_histogram("courier_stage_duration_milliseconds")
@@ -345,6 +350,24 @@ impl NodeCtx {
         }
     }
 
+    /// Precompute a recorder for `courier_script_payload_too_large_total`
+    /// bound to a fixed script `runtime` and a fixed `direction` ("in" or
+    /// "out"). Built once by `ScriptMapOne` in `set_node_ctx` per enabled
+    /// side so the hot path doesn't rebuild the attribute slice.
+    pub fn script_payload_too_large_recorder(
+        &self,
+        runtime: &'static str,
+        direction: &'static str,
+    ) -> ScriptPayloadTooLargeRecorder {
+        let mut attrs: Vec<KeyValue> = self.attrs.iter().cloned().collect();
+        attrs.push(KeyValue::new("runtime", runtime));
+        attrs.push(KeyValue::new("direction", direction));
+        ScriptPayloadTooLargeRecorder {
+            handle: self.handle.clone(),
+            attrs: Arc::from(attrs.as_slice()),
+        }
+    }
+
     pub fn record_stage_duration_ms(&self, ms: f64) {
         self.handle
             .inner
@@ -399,6 +422,25 @@ impl ScriptTimeoutRecorder {
             .inner
             .instruments
             .script_timeouts
+            .add(1, &self.attrs);
+    }
+}
+
+/// Reusable handle for counting script transform size violations at a
+/// fixed `runtime` and `direction`. Built once via
+/// [`NodeCtx::script_payload_too_large_recorder`].
+#[derive(Clone)]
+pub struct ScriptPayloadTooLargeRecorder {
+    handle: ObsHandle,
+    attrs: Arc<[KeyValue]>,
+}
+
+impl ScriptPayloadTooLargeRecorder {
+    pub fn record(&self) {
+        self.handle
+            .inner
+            .instruments
+            .script_payload_too_large
             .add(1, &self.attrs);
     }
 }

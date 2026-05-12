@@ -169,6 +169,8 @@ mod tests {
             script: script.into(),
             entrypoint: "transform".into(),
             timeout: None,
+            max_payload_bytes_in: None,
+            max_payload_bytes_out: None,
             python: None,
             rhai: Some(super::super::RhaiConfig {
                 max_operations: 100_000,
