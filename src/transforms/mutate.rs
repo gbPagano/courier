@@ -288,50 +288,65 @@ fn get_path_mut<'a>(root: &'a mut Value, path: &str) -> Result<Option<&'a mut Va
 
 fn cast_value(value: &Value, to: CastType) -> Result<Value> {
     match to {
-        CastType::String => Ok(Value::String(match value {
-            Value::String(s) => s.clone(),
-            other => other.to_string(),
-        })),
-        CastType::Int => {
-            let n = match value {
-                Value::Number(n) => n
-                    .as_i64()
-                    .or_else(|| n.as_f64().map(|f| f as i64))
-                    .unwrap_or(0),
-                Value::String(s) => s.parse().unwrap_or(0),
-                Value::Bool(b) => i64::from(*b),
-                Value::Null => 0,
-                _ => bail!("mutate: cannot cast {} to int", value),
-            };
-            Ok(Value::Number(serde_json::Number::from(n)))
-        }
-        CastType::Float => {
-            let f = match value {
-                Value::Number(n) => n.as_f64().unwrap_or(0.0),
-                Value::String(s) => s.parse().unwrap_or(0.0),
-                Value::Bool(b) => f64::from(*b),
-                Value::Null => 0.0,
-                _ => bail!("mutate: cannot cast {} to float", value),
-            };
-            Ok(Value::Number(
-                serde_json::Number::from_f64(f).unwrap_or_else(|| serde_json::Number::from(0)),
-            ))
-        }
-        CastType::Bool => {
-            let b = match value {
-                Value::Bool(b) => *b,
-                Value::Number(n) => n.as_f64().map(|f| f != 0.0).unwrap_or(false),
-                Value::String(s) => !s.is_empty() && s != "false" && s != "0",
-                Value::Null => false,
-                _ => bail!("mutate: cannot cast {} to bool", value),
-            };
-            Ok(Value::Bool(b))
-        }
-        CastType::Json => match value {
-            Value::String(s) => serde_json::from_str(s)
-                .map_err(|err| anyhow::anyhow!("mutate: cannot cast string to json: {err}")),
-            other => Ok(other.clone()),
-        },
+        CastType::String => Ok(cast_to_string(value)),
+        CastType::Int => cast_to_int(value),
+        CastType::Float => cast_to_float(value),
+        CastType::Bool => cast_to_bool(value),
+        CastType::Json => cast_to_json(value),
+    }
+}
+
+fn cast_to_string(value: &Value) -> Value {
+    let s = match value {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    Value::String(s)
+}
+
+fn cast_to_int(value: &Value) -> Result<Value> {
+    let n: i64 = match value {
+        Value::Number(n) => n
+            .as_i64()
+            .or_else(|| n.as_f64().map(|f| f as i64))
+            .unwrap_or(0),
+        Value::String(s) => s.parse().unwrap_or(0),
+        Value::Bool(b) => i64::from(*b),
+        Value::Null => 0,
+        _ => bail!("mutate: cannot cast {} to int", value),
+    };
+    Ok(Value::Number(serde_json::Number::from(n)))
+}
+
+fn cast_to_float(value: &Value) -> Result<Value> {
+    let f: f64 = match value {
+        Value::Number(n) => n.as_f64().unwrap_or(0.0),
+        Value::String(s) => s.parse().unwrap_or(0.0),
+        Value::Bool(b) => f64::from(*b),
+        Value::Null => 0.0,
+        _ => bail!("mutate: cannot cast {} to float", value),
+    };
+    Ok(Value::Number(
+        serde_json::Number::from_f64(f).unwrap_or_else(|| serde_json::Number::from(0)),
+    ))
+}
+
+fn cast_to_bool(value: &Value) -> Result<Value> {
+    let b = match value {
+        Value::Bool(b) => *b,
+        Value::Number(n) => n.as_f64().map(|f| f != 0.0).unwrap_or(false),
+        Value::String(s) => !s.is_empty() && s != "false" && s != "0",
+        Value::Null => false,
+        _ => bail!("mutate: cannot cast {} to bool", value),
+    };
+    Ok(Value::Bool(b))
+}
+
+fn cast_to_json(value: &Value) -> Result<Value> {
+    match value {
+        Value::String(s) => serde_json::from_str(s)
+            .map_err(|err| anyhow::anyhow!("mutate: cannot cast string to json: {err}")),
+        other => Ok(other.clone()),
     }
 }
 
@@ -505,7 +520,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cast_to_string() {
+    async fn cast_op_int_to_string() {
         let t = MutateTransform::new(
             "t",
             vec![Operation::Cast {
@@ -535,7 +550,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cast_to_bool() {
+    async fn cast_op_int_to_bool() {
         let t = MutateTransform::new(
             "t",
             vec![Operation::Cast {
@@ -678,6 +693,62 @@ mod tests {
         let env = Envelope::new("src", json!({}));
         let out = t.map(env).await.unwrap().unwrap();
         assert_eq!(out.payload, json!({}));
+    }
+
+    #[test]
+    fn cast_int_handles_each_scalar_kind() {
+        assert_eq!(cast_to_int(&json!(7)).unwrap(), json!(7));
+        // f64 path: serde_json::Number from a float yields no as_i64, so the
+        // fallback `as_f64().map(|f| f as i64)` is the one being exercised.
+        assert_eq!(cast_to_int(&json!(3.7)).unwrap(), json!(3));
+        assert_eq!(cast_to_int(&json!("12")).unwrap(), json!(12));
+        assert_eq!(cast_to_int(&json!("not-a-number")).unwrap(), json!(0));
+        assert_eq!(cast_to_int(&json!(true)).unwrap(), json!(1));
+        assert_eq!(cast_to_int(&json!(false)).unwrap(), json!(0));
+        assert_eq!(cast_to_int(&Value::Null).unwrap(), json!(0));
+        let err = cast_to_int(&json!([1, 2])).expect_err("array cannot cast to int");
+        assert!(err.to_string().contains("cannot cast"));
+    }
+
+    #[test]
+    fn cast_float_handles_each_scalar_kind() {
+        assert_eq!(cast_to_float(&json!(2.5)).unwrap(), json!(2.5));
+        assert_eq!(cast_to_float(&json!("1.25")).unwrap(), json!(1.25));
+        assert_eq!(cast_to_float(&json!("not-a-number")).unwrap(), json!(0.0));
+        assert_eq!(cast_to_float(&json!(true)).unwrap(), json!(1.0));
+        assert_eq!(cast_to_float(&json!(false)).unwrap(), json!(0.0));
+        assert_eq!(cast_to_float(&Value::Null).unwrap(), json!(0.0));
+        let err = cast_to_float(&json!({"k": 1})).expect_err("object cannot cast to float");
+        assert!(err.to_string().contains("cannot cast"));
+    }
+
+    #[test]
+    fn cast_bool_handles_each_scalar_kind() {
+        assert_eq!(cast_to_bool(&json!(true)).unwrap(), json!(true));
+        assert_eq!(cast_to_bool(&json!(0)).unwrap(), json!(false));
+        assert_eq!(cast_to_bool(&json!(3.5)).unwrap(), json!(true));
+        // String "false" / "0" / "" all read as falsy; anything else is true.
+        assert_eq!(cast_to_bool(&json!("")).unwrap(), json!(false));
+        assert_eq!(cast_to_bool(&json!("false")).unwrap(), json!(false));
+        assert_eq!(cast_to_bool(&json!("0")).unwrap(), json!(false));
+        assert_eq!(cast_to_bool(&json!("yes")).unwrap(), json!(true));
+        assert_eq!(cast_to_bool(&Value::Null).unwrap(), json!(false));
+        let err = cast_to_bool(&json!([1])).expect_err("array cannot cast to bool");
+        assert!(err.to_string().contains("cannot cast"));
+    }
+
+    #[test]
+    fn cast_json_passes_through_non_strings() {
+        assert_eq!(cast_to_json(&json!(7)).unwrap(), json!(7));
+        assert_eq!(cast_to_json(&json!([1, 2])).unwrap(), json!([1, 2]));
+        assert_eq!(cast_to_json(&Value::Null).unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn cast_string_stringifies_non_string_values() {
+        assert_eq!(cast_to_string(&json!(true)), json!("true"));
+        assert_eq!(cast_to_string(&Value::Null), json!("null"));
+        assert_eq!(cast_to_string(&json!([1, 2])), json!("[1,2]"));
     }
 
     #[tokio::test]

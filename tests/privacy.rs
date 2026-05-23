@@ -112,54 +112,64 @@ fn scan_snippet(source: &str) -> Vec<&'static str> {
 fn find_close_paren(content: &str, open_pos: usize) -> Option<usize> {
     let bytes = content.as_bytes();
     debug_assert_eq!(bytes[open_pos], b'(');
-    enum S {
-        Code,
-        Str,
-        LineComment,
-        BlockComment,
-    }
-    let mut state = S::Code;
     let mut depth: i32 = 0;
     let mut i = open_pos;
     while i < bytes.len() {
-        let c = bytes[i];
-        match state {
-            S::Code => match c {
-                b'"' => state = S::Str,
-                b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => state = S::LineComment,
-                b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'*' => {
-                    state = S::BlockComment;
-                    i += 1;
-                }
-                b'(' => depth += 1,
-                b')' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return Some(i);
-                    }
-                }
-                _ => {}
-            },
-            S::Str => match c {
-                b'\\' => i += 1, // skip the escaped byte
-                b'"' => state = S::Code,
-                _ => {}
-            },
-            S::LineComment => {
-                if c == b'\n' {
-                    state = S::Code;
+        match bytes[i] {
+            b'"' => {
+                i = skip_string(bytes, i + 1);
+                continue;
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                i = skip_line_comment(bytes, i + 2);
+                continue;
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                i = skip_block_comment(bytes, i + 2);
+                continue;
+            }
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
                 }
             }
-            S::BlockComment => {
-                if c == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
-                    state = S::Code;
-                    i += 1;
-                }
-            }
+            _ => {}
         }
         i += 1;
     }
     None
+}
+
+/// Advance past a `"`-delimited string, honoring `\` escapes.
+/// `i` points at the first byte after the opening quote.
+fn skip_string(bytes: &[u8], mut i: usize) -> usize {
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' if i + 1 < bytes.len() => i += 2,
+            b'"' => return i + 1,
+            _ => i += 1,
+        }
+    }
+    bytes.len()
+}
+
+fn skip_line_comment(bytes: &[u8], mut i: usize) -> usize {
+    while i < bytes.len() && bytes[i] != b'\n' {
+        i += 1;
+    }
+    i
+}
+
+fn skip_block_comment(bytes: &[u8], mut i: usize) -> usize {
+    while i + 1 < bytes.len() {
+        if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+            return i + 2;
+        }
+        i += 1;
+    }
+    bytes.len()
 }
 
 #[cfg(test)]

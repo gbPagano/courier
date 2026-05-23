@@ -172,31 +172,31 @@ fn compare_values(left: &Value, op: CompareOp, right: &Value) -> bool {
     match op {
         CompareOp::Eq => left == right,
         CompareOp::Ne => left != right,
-        CompareOp::Lt | CompareOp::Le | CompareOp::Gt | CompareOp::Ge => {
-            // Relational comparisons only match when both sides are comparable.
-            // Null (missing field) or mixed types are treated as non-matches.
-            match (as_f64(left), as_f64(right)) {
-                (Some(l), Some(r)) => match op {
-                    CompareOp::Lt => l < r,
-                    CompareOp::Le => l <= r,
-                    CompareOp::Gt => l > r,
-                    CompareOp::Ge => l >= r,
-                    _ => unreachable!(),
-                },
-                (None, None) if left.is_string() && right.is_string() => {
-                    let ls = left.as_str().unwrap();
-                    let rs = right.as_str().unwrap();
-                    match op {
-                        CompareOp::Lt => ls < rs,
-                        CompareOp::Le => ls <= rs,
-                        CompareOp::Gt => ls > rs,
-                        CompareOp::Ge => ls >= rs,
-                        _ => unreachable!(),
-                    }
-                }
-                _ => false,
-            }
-        }
+        _ => compare_relational(left, op, right),
+    }
+}
+
+/// Relational comparisons (`<`, `<=`, `>`, `>=`) only match when both sides
+/// are the same comparable kind. Null (missing field) or mixed types are
+/// treated as non-matches.
+fn compare_relational(left: &Value, op: CompareOp, right: &Value) -> bool {
+    if let (Some(l), Some(r)) = (as_f64(left), as_f64(right)) {
+        return apply_ord(l, op, r);
+    }
+    if let (Some(l), Some(r)) = (left.as_str(), right.as_str()) {
+        return apply_ord(l, op, r);
+    }
+    false
+}
+
+fn apply_ord<T: PartialOrd>(l: T, op: CompareOp, r: T) -> bool {
+    match op {
+        CompareOp::Lt => l < r,
+        CompareOp::Le => l <= r,
+        CompareOp::Gt => l > r,
+        CompareOp::Ge => l >= r,
+        // `compare_values` only routes relational ops here.
+        CompareOp::Eq | CompareOp::Ne => unreachable!(),
     }
 }
 
@@ -842,5 +842,60 @@ mod tests {
     #[test]
     fn skips_utf8_whitespace() {
         parse_predicate("payload.status\u{00a0}==\u{00a0}\"ok\"").unwrap();
+    }
+
+    #[test]
+    fn compare_eq_ne_cover_equal_and_unequal_values() {
+        assert!(compare_values(&json!(1), CompareOp::Eq, &json!(1)));
+        assert!(!compare_values(&json!(1), CompareOp::Eq, &json!(2)));
+        assert!(compare_values(&json!("a"), CompareOp::Ne, &json!("b")));
+        assert!(!compare_values(&json!("a"), CompareOp::Ne, &json!("a")));
+    }
+
+    #[test]
+    fn compare_relational_orders_numbers() {
+        assert!(compare_values(&json!(1), CompareOp::Lt, &json!(2)));
+        assert!(compare_values(&json!(2), CompareOp::Le, &json!(2)));
+        assert!(compare_values(&json!(3), CompareOp::Gt, &json!(2)));
+        assert!(compare_values(&json!(2), CompareOp::Ge, &json!(2)));
+        assert!(!compare_values(&json!(2), CompareOp::Lt, &json!(1)));
+    }
+
+    #[test]
+    fn compare_relational_orders_strings_lexicographically() {
+        assert!(compare_values(&json!("a"), CompareOp::Lt, &json!("b")));
+        assert!(compare_values(&json!("a"), CompareOp::Le, &json!("a")));
+        assert!(compare_values(&json!("b"), CompareOp::Gt, &json!("a")));
+        assert!(compare_values(&json!("a"), CompareOp::Ge, &json!("a")));
+    }
+
+    #[test]
+    fn compare_relational_returns_false_for_mixed_or_null() {
+        // Number vs string: not comparable.
+        assert!(!compare_values(&json!(1), CompareOp::Lt, &json!("1")));
+        // Null on either side: not comparable.
+        assert!(!compare_values(&Value::Null, CompareOp::Gt, &json!(1)));
+        assert!(!compare_values(&json!(1), CompareOp::Ge, &Value::Null));
+        // Two nulls / objects: not comparable.
+        assert!(!compare_values(
+            &json!({"k": 1}),
+            CompareOp::Lt,
+            &json!({"k": 2})
+        ));
+    }
+
+    #[test]
+    fn truthy_covers_every_value_kind() {
+        assert!(!truthy(&Value::Null));
+        assert!(truthy(&json!(true)));
+        assert!(!truthy(&json!(false)));
+        assert!(truthy(&json!(1)));
+        assert!(!truthy(&json!(0)));
+        assert!(truthy(&json!("x")));
+        assert!(!truthy(&json!("")));
+        assert!(truthy(&json!([1])));
+        assert!(!truthy(&json!([])));
+        assert!(truthy(&json!({"k": 1})));
+        assert!(!truthy(&json!({})));
     }
 }
