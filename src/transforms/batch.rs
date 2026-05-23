@@ -460,7 +460,7 @@ mod tests {
 
     #[test]
     fn factory_resolves_through_registry() {
-        let registry = Registry::with_builtins().unwrap();
+        let registry = Registry::with_builtins();
         registry
             .build_transform(
                 "p/t0",
@@ -475,7 +475,7 @@ mod tests {
 
     #[test]
     fn factory_rejects_zero_max_size() {
-        let registry = Registry::with_builtins().unwrap();
+        let registry = Registry::with_builtins();
         let err = registry
             .build_transform(
                 "p/t0",
@@ -493,7 +493,7 @@ mod tests {
 
     #[test]
     fn factory_rejects_reserved_payload_keys() {
-        let registry = Registry::with_builtins().unwrap();
+        let registry = Registry::with_builtins();
         for payload_key in RESERVED_PAYLOAD_KEYS {
             let err = registry
                 .build_transform(

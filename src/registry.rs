@@ -111,10 +111,14 @@ impl Registry {
     /// Convenience constructor: empty registry preloaded with every
     /// built-in component from this crate. Equivalent to
     /// `let mut r = Registry::default(); register_builtin(&mut r)?;`.
-    pub fn with_builtins() -> Result<Self> {
+    ///
+    /// Infallible by construction: a fresh registry has no entries, so
+    /// `register_builtin` cannot hit a duplicate-kind error. A panic here
+    /// would mean two built-ins share a `kind`, which is a build-time bug.
+    pub fn with_builtins() -> Self {
         let mut registry = Self::default();
-        register_builtin(&mut registry)?;
-        Ok(registry)
+        register_builtin(&mut registry).expect("built-in registry has no duplicate kinds");
+        registry
     }
 
     pub fn register_source(
@@ -540,7 +544,7 @@ mod tests {
 
     #[test]
     fn with_builtins_registers_every_builtin_kind() {
-        let registry = Registry::with_builtins().unwrap();
+        let registry = Registry::with_builtins();
 
         let mut sources: Vec<_> = registry.source_kinds().collect();
         sources.sort();

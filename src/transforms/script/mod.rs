@@ -542,7 +542,7 @@ mod tests {
 
     #[test]
     fn factory_resolves_through_registry() {
-        let registry = Registry::with_builtins().unwrap();
+        let registry = Registry::with_builtins();
         registry
             .build_transform(
                 "p/t0",
@@ -564,7 +564,7 @@ mod tests {
         let path = dir.path().join("transform.rhai");
         std::fs::write(&path, "fn transform(env) { env }").unwrap();
 
-        let registry = Registry::with_builtins().unwrap();
+        let registry = Registry::with_builtins();
         registry
             .build_transform(
                 "p/t0",
@@ -586,7 +586,7 @@ mod tests {
         let path = dir.path().join("transform.lua");
         std::fs::write(&path, "function transform(env) return env end").unwrap();
 
-        let registry = Registry::with_builtins().unwrap();
+        let registry = Registry::with_builtins();
         registry
             .build_transform(
                 "p/t0",
@@ -604,7 +604,7 @@ mod tests {
 
     #[test]
     fn factory_rejects_missing_script_source() {
-        let registry = Registry::with_builtins().unwrap();
+        let registry = Registry::with_builtins();
         let err = registry
             .build_transform(
                 "p/t0",
@@ -625,7 +625,7 @@ mod tests {
 
     #[test]
     fn factory_rejects_both_script_and_script_file() {
-        let registry = Registry::with_builtins().unwrap();
+        let registry = Registry::with_builtins();
         let err = registry
             .build_transform(
                 "p/t0",
@@ -650,7 +650,7 @@ mod tests {
 
     #[test]
     fn factory_reports_missing_script_file() {
-        let registry = Registry::with_builtins().unwrap();
+        let registry = Registry::with_builtins();
         let err = registry
             .build_transform(
                 "p/t0",
@@ -671,7 +671,7 @@ mod tests {
 
     #[test]
     fn factory_resolves_lua_through_registry() {
-        let registry = Registry::with_builtins().unwrap();
+        let registry = Registry::with_builtins();
         registry
             .build_transform(
                 "p/t0",
@@ -689,7 +689,7 @@ mod tests {
 
     #[test]
     fn factory_requires_runtime() {
-        let registry = Registry::with_builtins().unwrap();
+        let registry = Registry::with_builtins();
         let err = registry
             .build_transform(
                 "p/t0",
@@ -716,7 +716,7 @@ mod tests {
         // max_operations is shared with Lua (used as an instruction
         // budget via the mlua hook). The other Rhai knobs remain
         // Rhai-only — see `factory_rejects_rhai_only_limits_for_lua`.
-        let registry = Registry::with_builtins().unwrap();
+        let registry = Registry::with_builtins();
         registry
             .build_transform(
                 "p/t0",
@@ -735,7 +735,7 @@ mod tests {
 
     #[test]
     fn factory_rejects_rhai_only_limits_for_lua() {
-        let registry = Registry::with_builtins().unwrap();
+        let registry = Registry::with_builtins();
         let err = registry
             .build_transform(
                 "p/t0",
@@ -760,7 +760,7 @@ mod tests {
 
     #[test]
     fn factory_resolves_python_through_registry() {
-        let registry = Registry::with_builtins().unwrap();
+        let registry = Registry::with_builtins();
         registry
             .build_transform(
                 "p/t0",
@@ -782,7 +782,7 @@ mod tests {
         let path = dir.path().join("transform.py");
         std::fs::write(&path, "def transform(env):\n    return env\n").unwrap();
 
-        let registry = Registry::with_builtins().unwrap();
+        let registry = Registry::with_builtins();
         registry
             .build_transform(
                 "p/t0",
@@ -800,7 +800,7 @@ mod tests {
 
     #[test]
     fn factory_rejects_limits_for_python() {
-        let registry = Registry::with_builtins().unwrap();
+        let registry = Registry::with_builtins();
         let err = registry
             .build_transform(
                 "p/t0",
@@ -822,7 +822,7 @@ mod tests {
 
     #[test]
     fn factory_rejects_python_bin_for_non_python_runtime() {
-        let registry = Registry::with_builtins().unwrap();
+        let registry = Registry::with_builtins();
         let err = registry
             .build_transform(
                 "p/t0",
@@ -847,7 +847,7 @@ mod tests {
 
     #[test]
     fn factory_rejects_zero_timeout_ms() {
-        let registry = Registry::with_builtins().unwrap();
+        let registry = Registry::with_builtins();
         for runtime in ["rhai", "lua", "python"] {
             let script = if runtime == "python" {
                 "def transform(env):\n    return env\n"
@@ -883,7 +883,7 @@ mod tests {
 
     #[test]
     fn factory_rejects_zero_max_payload_bytes() {
-        let registry = Registry::with_builtins().unwrap();
+        let registry = Registry::with_builtins();
         for field in ["max_payload_bytes_in", "max_payload_bytes_out"] {
             let err = registry
                 .build_transform(
@@ -907,7 +907,7 @@ mod tests {
 
     #[test]
     fn factory_accepts_size_limits_for_all_runtimes() {
-        let registry = Registry::with_builtins().unwrap();
+        let registry = Registry::with_builtins();
         let cases: &[(&str, &str)] = &[
             ("rhai", "fn transform(env) { env }"),
             ("lua", "function transform(env) return env end"),
@@ -934,7 +934,7 @@ mod tests {
 
     #[test]
     fn factory_reports_invalid_runtime() {
-        let registry = Registry::with_builtins().unwrap();
+        let registry = Registry::with_builtins();
         let result = registry.build_transform(
             "p/t0",
             TransformSpec {

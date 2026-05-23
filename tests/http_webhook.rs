@@ -179,7 +179,7 @@ async fn invalid_webhook_requests_return_client_errors() {
 
 #[test]
 fn parse_config_reports_invalid_webhook_config() {
-    let registry = Registry::with_builtins().unwrap();
+    let registry = Registry::with_builtins();
     let err = match registry.build_source(
         "incoming-events/src",
         SourceSpec {

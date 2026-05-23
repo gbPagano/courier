@@ -730,7 +730,7 @@ mod tests {
 
     #[test]
     fn factory_resolves_through_registry() {
-        let registry = Registry::with_builtins().unwrap();
+        let registry = Registry::with_builtins();
         registry
             .build_transform(
                 "p/t0",
@@ -745,7 +745,7 @@ mod tests {
 
     #[test]
     fn factory_reports_invalid_config() {
-        let registry = Registry::with_builtins().unwrap();
+        let registry = Registry::with_builtins();
         let err = registry
             .build_transform(
                 "p/t0",
@@ -766,7 +766,7 @@ mod tests {
 
     #[test]
     fn factory_rejects_malformed_predicate() {
-        let registry = Registry::with_builtins().unwrap();
+        let registry = Registry::with_builtins();
         let err = registry
             .build_transform(
                 "p/t0",

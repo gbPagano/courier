@@ -74,8 +74,7 @@ async fn replay_delivers_dlq_envelopes_to_sink() {
         )],
     };
 
-    let courier =
-        build_replay_runtime(config, &dlq_path, Registry::with_builtins().unwrap()).unwrap();
+    let courier = build_replay_runtime(config, &dlq_path, Registry::with_builtins()).unwrap();
 
     let (handles, _state) = courier.spawn(CancellationToken::new());
     tokio::time::timeout(Duration::from_secs(5), join_all(handles))
@@ -117,8 +116,7 @@ async fn replay_filters_entries_by_pipeline_in_multi_pipeline_config() {
         ],
     };
 
-    let courier =
-        build_replay_runtime(config, &dlq_path, Registry::with_builtins().unwrap()).unwrap();
+    let courier = build_replay_runtime(config, &dlq_path, Registry::with_builtins()).unwrap();
 
     let (handles, _state) = courier.spawn(CancellationToken::new());
     tokio::time::timeout(Duration::from_secs(5), join_all(handles))
@@ -185,8 +183,7 @@ async fn replay_splits_multi_sink_pipeline_per_sink() {
         }],
     };
 
-    let courier =
-        build_replay_runtime(config, &dlq_path, Registry::with_builtins().unwrap()).unwrap();
+    let courier = build_replay_runtime(config, &dlq_path, Registry::with_builtins()).unwrap();
 
     let (handles, _state) = courier.spawn(CancellationToken::new());
     tokio::time::timeout(Duration::from_secs(5), join_all(handles))

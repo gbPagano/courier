@@ -5,10 +5,12 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use serde_json::json;
 
+use std::process::ExitCode;
+
 use crate::config::{Config, FanOutPolicyConfig, PipelineSpec, SinkSpec, SourceSpec};
 use crate::envelope::DeadLetterEntry;
 use crate::retry::ExhaustedPolicy;
-use crate::{Courier, Registry};
+use crate::{Courier, Registry, RunOutcome};
 
 pub const DEFAULT_CONFIG_PATH: &str = "config.toml";
 pub const CONFIG_ENV_VAR: &str = "COURIER_CONFIG";
@@ -82,7 +84,7 @@ pub fn build_runtime(path: &Path) -> Result<Courier> {
 /// logging subscriber before the runtime is built — without re-reading
 /// the file from disk.
 pub fn build_runtime_from_config(config: Config, source: &Path) -> Result<Courier> {
-    let registry = Registry::with_builtins()?;
+    let registry = Registry::with_builtins();
     registry
         .build_courier(config)
         .with_context(|| format!("failed to build runtime from config {}", source.display()))
@@ -90,7 +92,7 @@ pub fn build_runtime_from_config(config: Config, source: &Path) -> Result<Courie
 
 pub fn validate_config(path: &Path) -> Result<()> {
     let config = Config::load(path)?;
-    let registry = Registry::with_builtins()?;
+    let registry = Registry::with_builtins();
     registry
         .dry_run_build(config)
         .with_context(|| format!("failed to build runtime from config {}", path.display()))
@@ -144,7 +146,7 @@ pub fn list_components(registry: &Registry) -> String {
 ///   replacing it with `Propagate` so replay failures surface as errors
 ///   instead of creating an infinite loop.
 ///
-/// `registry` is used to build the replay runtime. Pass `Registry::with_builtins()?`
+/// `registry` is used to build the replay runtime. Pass `Registry::with_builtins()`
 /// for the default set of components, or a custom registry if the config references
 /// plugin-provided components.
 pub fn build_replay_runtime(
@@ -409,6 +411,118 @@ fn neutralize_dlq_paths(sinks: &mut [SinkSpec], dlq_path: &Path) {
     }
 }
 
+pub async fn run_command(config: Option<PathBuf>) -> ExitCode {
+    let path = resolve_config_path(config);
+    let cfg = match load_validated_config(&path) {
+        Ok(cfg) => cfg,
+        Err(err) => {
+            eprintln!("{err:#}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(err) = crate::observability::init_from_config(cfg.observability.as_ref(), "info") {
+        eprintln!("failed to initialize observability: {err:#}");
+        return ExitCode::FAILURE;
+    }
+    let courier = match prepare_run_courier(cfg, &path) {
+        Ok(c) => c,
+        Err(err) => {
+            tracing::error!("failed to start courier: {err:#}");
+            return ExitCode::FAILURE;
+        }
+    };
+    tracing::info!("loaded pipeline config from {}", path.display());
+    run_outcome_to_exit_code(courier.run().await, "one or more pipelines failed")
+}
+
+fn load_validated_config(path: &Path) -> Result<Config> {
+    let cfg = Config::load(path)
+        .with_context(|| format!("failed to load config from {}", path.display()))?;
+    cfg.validate().context("configuration invalid")?;
+    Ok(cfg)
+}
+
+fn prepare_run_courier(cfg: Config, path: &Path) -> Result<Courier> {
+    // Config::validate() already checked that health.address parses.
+    let health_address: Option<std::net::SocketAddr> = cfg
+        .health
+        .as_ref()
+        .map(|h| h.address.parse().expect("address was validated"));
+    let shutdown_timeout = cfg
+        .shutdown
+        .as_ref()
+        .map(|s| std::time::Duration::from_secs(s.timeout_secs))
+        .unwrap_or(std::time::Duration::from_secs(30));
+    Ok(build_runtime_from_config(cfg, path)?
+        .with_shutdown_timeout(shutdown_timeout)
+        .with_health_address(health_address))
+}
+
+fn run_outcome_to_exit_code(outcome: RunOutcome, failure_msg: &str) -> ExitCode {
+    match outcome {
+        RunOutcome::Success => ExitCode::SUCCESS,
+        RunOutcome::Failed => {
+            tracing::error!("{failure_msg}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+pub fn validate_command(config: Option<PathBuf>) -> ExitCode {
+    if let Err(err) = crate::observability::init_default_logging("off") {
+        eprintln!("failed to initialize logging: {err:#}");
+        return ExitCode::FAILURE;
+    }
+    let path = resolve_config_path(config);
+    match validate_config(&path) {
+        Ok(()) => {
+            println!("configuration OK: {}", path.display());
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("configuration invalid: {err:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+pub fn list_components_command() -> ExitCode {
+    if let Err(err) = crate::observability::init_default_logging("off") {
+        eprintln!("failed to initialize logging: {err:#}");
+        return ExitCode::FAILURE;
+    }
+    print!("{}", list_components(&Registry::with_builtins()));
+    ExitCode::SUCCESS
+}
+
+pub async fn replay_dlq_command(dlq_path: PathBuf, config: Option<PathBuf>) -> ExitCode {
+    if let Err(err) = validate_dlq_path(&dlq_path) {
+        eprintln!("invalid dead-letter path: {err:#}");
+        return ExitCode::FAILURE;
+    }
+    let path = resolve_config_path(config);
+    let cfg = match load_validated_config(&path) {
+        Ok(cfg) => cfg,
+        Err(err) => {
+            eprintln!("{err:#}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(err) = crate::observability::init_from_config(cfg.observability.as_ref(), "info") {
+        eprintln!("failed to initialize observability: {err:#}");
+        return ExitCode::FAILURE;
+    }
+    let courier = match build_replay_runtime(cfg, &dlq_path, Registry::with_builtins()) {
+        Ok(c) => c,
+        Err(err) => {
+            tracing::error!("failed to start replay: {err:#}");
+            return ExitCode::FAILURE;
+        }
+    };
+    tracing::info!("replaying dead-letter entries from {}", dlq_path.display());
+    run_outcome_to_exit_code(courier.run().await, "replay pipeline failed")
+}
+
 pub fn validate_dlq_path(dlq_path: &Path) -> Result<()> {
     if !dlq_path.exists() {
         bail!("dead-letter file '{}' does not exist", dlq_path.display());
@@ -444,9 +558,177 @@ mod tests {
         );
     }
 
+    fn is_failure(code: ExitCode) -> bool {
+        format!("{code:?}").contains("(1)")
+    }
+
+    fn is_success(code: ExitCode) -> bool {
+        format!("{code:?}").contains("(0)")
+    }
+
+    fn write_valid_config(path: &Path) {
+        std::fs::write(
+            path,
+            r#"
+[[pipelines]]
+name = "valid"
+
+[pipelines.source]
+type = "api_poll"
+url = "http://localhost/data"
+interval_secs = 60
+
+[[pipelines.sinks]]
+type = "api"
+url = "http://localhost/ingest"
+"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn load_validated_config_rejects_missing_file() {
+        let err = load_validated_config(Path::new("/nonexistent/cfg.toml")).unwrap_err();
+        assert!(format!("{err:#}").contains("failed to load config"));
+    }
+
+    #[test]
+    fn load_validated_config_rejects_invalid_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dup.toml");
+        std::fs::write(
+            &path,
+            r#"
+[[pipelines]]
+name = "dup"
+[pipelines.source]
+type = "api_poll"
+url = "http://localhost/d"
+interval_secs = 60
+[[pipelines.sinks]]
+type = "api"
+url = "http://localhost/o"
+
+[[pipelines]]
+name = "dup"
+[pipelines.source]
+type = "api_poll"
+url = "http://localhost/d"
+interval_secs = 60
+[[pipelines.sinks]]
+type = "api"
+url = "http://localhost/o"
+"#,
+        )
+        .unwrap();
+        let err = load_validated_config(&path).unwrap_err();
+        assert!(format!("{err:#}").contains("configuration invalid"));
+    }
+
+    #[test]
+    fn load_validated_config_accepts_valid_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ok.toml");
+        write_valid_config(&path);
+        load_validated_config(&path).unwrap();
+    }
+
+    #[test]
+    fn prepare_run_courier_applies_defaults_when_no_health_or_shutdown() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ok.toml");
+        write_valid_config(&path);
+        let cfg = load_validated_config(&path).unwrap();
+        prepare_run_courier(cfg, &path).unwrap();
+    }
+
+    #[test]
+    fn prepare_run_courier_parses_health_address() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ok.toml");
+        std::fs::write(
+            &path,
+            r#"
+[health]
+address = "127.0.0.1:9090"
+
+[[pipelines]]
+name = "p"
+[pipelines.source]
+type = "api_poll"
+url = "http://localhost/d"
+interval_secs = 60
+[[pipelines.sinks]]
+type = "api"
+url = "http://localhost/o"
+"#,
+        )
+        .unwrap();
+        let cfg = load_validated_config(&path).unwrap();
+        prepare_run_courier(cfg, &path).unwrap();
+    }
+
+    #[test]
+    fn run_outcome_to_exit_code_maps_success() {
+        assert!(is_success(run_outcome_to_exit_code(
+            RunOutcome::Success,
+            "ignored"
+        )));
+    }
+
+    #[test]
+    fn run_outcome_to_exit_code_maps_failure() {
+        assert!(is_failure(run_outcome_to_exit_code(
+            RunOutcome::Failed,
+            "boom"
+        )));
+    }
+
+    #[tokio::test]
+    async fn run_command_fails_when_config_missing() {
+        let code = run_command(Some(PathBuf::from("/nonexistent/cfg-for-run.toml"))).await;
+        assert!(is_failure(code));
+    }
+
+    #[tokio::test]
+    async fn replay_dlq_command_fails_when_dlq_missing() {
+        let code =
+            replay_dlq_command(PathBuf::from("/nonexistent/dlq-for-replay.jsonl"), None).await;
+        assert!(is_failure(code));
+    }
+
+    #[tokio::test]
+    async fn replay_dlq_command_fails_when_config_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let dlq = dir.path().join("dlq.jsonl");
+        std::fs::write(&dlq, "").unwrap();
+        let code =
+            replay_dlq_command(dlq, Some(PathBuf::from("/nonexistent/cfg-for-replay.toml"))).await;
+        assert!(is_failure(code));
+    }
+
+    #[test]
+    fn validate_command_succeeds_for_valid_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ok.toml");
+        write_valid_config(&path);
+        assert!(is_success(validate_command(Some(path))));
+    }
+
+    #[test]
+    fn validate_command_fails_for_missing_config() {
+        let code = validate_command(Some(PathBuf::from("/nonexistent/cfg-for-validate.toml")));
+        assert!(is_failure(code));
+    }
+
+    #[test]
+    fn list_components_command_succeeds() {
+        assert!(is_success(list_components_command()));
+    }
+
     #[test]
     fn list_components_includes_registered_builtins() {
-        let registry = Registry::with_builtins().unwrap();
+        let registry = Registry::with_builtins();
         let output = list_components(&registry);
 
         assert!(output.contains("sources:\n"));
@@ -643,8 +925,7 @@ url = "http://localhost/ingest"
             }],
         };
 
-        let result =
-            build_replay_runtime(config, &dlq_path, Registry::with_builtins().unwrap()).unwrap();
+        let result = build_replay_runtime(config, &dlq_path, Registry::with_builtins()).unwrap();
         // We can't inspect pipelines directly (Courier owns them), but the
         // build succeeds, which means transforms were cleared and
         // the jsonl_file source was accepted.
@@ -696,7 +977,7 @@ url = "http://localhost/ingest"
             }],
         };
 
-        let result = build_replay_runtime(config, &dlq_path, Registry::with_builtins().unwrap());
+        let result = build_replay_runtime(config, &dlq_path, Registry::with_builtins());
         // Build succeeds — sink1 (the failed sink from the DLQ entry) is
         // kept, sink0 is filtered out.
         assert!(result.is_ok(), "expected ok, got {:?}", result.err());
@@ -739,7 +1020,7 @@ url = "http://localhost/ingest"
             }],
         };
 
-        let err = build_replay_runtime(config, &dlq_path, Registry::with_builtins().unwrap())
+        let err = build_replay_runtime(config, &dlq_path, Registry::with_builtins())
             .err()
             .unwrap();
         let msg = format!("{err:#}");
@@ -794,7 +1075,7 @@ url = "http://localhost/ingest"
             }],
         };
 
-        let result = build_replay_runtime(config, &dlq_path, Registry::with_builtins().unwrap());
+        let result = build_replay_runtime(config, &dlq_path, Registry::with_builtins());
         assert!(
             result.is_ok(),
             "expected ok with broadcast_with_drop + single sink after filtering, got {:?}",
@@ -860,7 +1141,7 @@ url = "http://localhost/ingest"
             }],
         };
 
-        let result = build_replay_runtime(config, &dlq_path, Registry::with_builtins().unwrap());
+        let result = build_replay_runtime(config, &dlq_path, Registry::with_builtins());
         assert!(
             result.is_ok(),
             "expected ok with multi-sink DLQ splitting, got {:?}",
@@ -914,7 +1195,7 @@ url = "http://localhost/ingest"
             }],
         };
 
-        let result = build_replay_runtime(config, &dlq_path, Registry::with_builtins().unwrap());
+        let result = build_replay_runtime(config, &dlq_path, Registry::with_builtins());
         // Should succeed — the DLQ path conflict is resolved by
         // neutralizing (switching to Propagate) rather than erroring.
         assert!(result.is_ok(), "expected ok, got {:?}", result.err());
@@ -966,7 +1247,7 @@ url = "http://localhost/ingest"
             }],
         };
 
-        let result = build_replay_runtime(config, &dlq_path, Registry::with_builtins().unwrap());
+        let result = build_replay_runtime(config, &dlq_path, Registry::with_builtins());
         assert!(result.is_ok(), "expected ok, got {:?}", result.err());
     }
 
@@ -1150,7 +1431,7 @@ url = "http://localhost/ingest"
             }],
         };
 
-        let result = build_replay_runtime(config, &dlq_path, Registry::with_builtins().unwrap());
+        let result = build_replay_runtime(config, &dlq_path, Registry::with_builtins());
         assert!(
             result.is_ok(),
             "expected ok with bare-envelope DLQ, got {:?}",
