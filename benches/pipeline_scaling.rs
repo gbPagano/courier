@@ -28,37 +28,11 @@ fn bench_pipeline_scaling(c: &mut Criterion) {
 // --- Summary table ---
 
 fn walk_pipeline_results(dir: &std::path::Path, results: &mut BTreeMap<usize, f64>) {
-    let new_dir = dir.join("new");
-    let estimates_path = new_dir.join("estimates.json");
-    let meta_path = new_dir.join("benchmark.json");
-
-    if estimates_path.exists() && meta_path.exists() {
-        let mut parse = || -> Option<()> {
-            let e: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(&estimates_path).ok()?).ok()?;
-            let m: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(&meta_path).ok()?).ok()?;
-            let mean_ns = e["mean"]["point_estimate"].as_f64()?;
-            let elements = m["throughput"]["Elements"].as_u64()?;
-            let count: usize = m["value_str"].as_str()?.parse().ok()?;
-            if mean_ns > 0.0 {
-                results.insert(count, elements as f64 / (mean_ns / 1e9));
-            }
-            Some(())
-        };
-        parse();
-        return;
-    }
-
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() && path.file_name().map(|n| n != "report").unwrap_or(true) {
-            walk_pipeline_results(&path, results);
+    utils::visit_criterion_samples(dir, &mut |sample| {
+        if let Some(count) = sample.value_str.and_then(|s| s.parse::<usize>().ok()) {
+            results.insert(count, sample.throughput);
         }
-    }
+    });
 }
 
 fn print_pipeline_table() {

@@ -38,23 +38,14 @@ async fn sqlite_source_polls_rows_and_sink_inserts_rows() -> anyhow::Result<()> 
         .execute(&pool)
         .await?;
 
-    let source = SqlQueryPollSource::new(
+    let env = drain_first_envelope(
         "sqlite/src",
         SqlDriver::Sqlite,
         &dsn,
         "SELECT id, email, active FROM users ORDER BY id",
-        Duration::from_secs(60),
-    );
-    let (tx, mut rx) = mpsc::channel(8);
-    let cancel = CancellationToken::new();
-    let c = cancel.clone();
-    let handle = tokio::spawn(async move { Box::new(source).run(tx, c).await });
-
-    let env = tokio::time::timeout(Duration::from_secs(2), rx.recv())
-        .await?
-        .expect("source closed before emitting");
-    cancel.cancel();
-    let _ = tokio::time::timeout(Duration::from_secs(1), handle).await;
+        Duration::from_secs(2),
+    )
+    .await?;
 
     assert_eq!(env.payload["id"], json!(1));
     assert_eq!(env.payload["email"], json!("a@example.com"));
@@ -130,23 +121,14 @@ async fn sqlite_source_keeps_text_columns_as_strings() -> anyhow::Result<()> {
     .execute(&pool)
     .await?;
 
-    let source = SqlQueryPollSource::new(
+    let env = drain_first_envelope(
         "sqlite/src",
         SqlDriver::Sqlite,
         &dsn,
         "SELECT bool_text, number_text, null_text, object_text, array_text, varchar_text, clob_text FROM events",
-        Duration::from_secs(60),
-    );
-    let (tx, mut rx) = mpsc::channel(8);
-    let cancel = CancellationToken::new();
-    let c = cancel.clone();
-    let handle = tokio::spawn(async move { Box::new(source).run(tx, c).await });
-
-    let env = tokio::time::timeout(Duration::from_secs(2), rx.recv())
-        .await?
-        .expect("source closed before emitting");
-    cancel.cancel();
-    let _ = tokio::time::timeout(Duration::from_secs(1), handle).await;
+        Duration::from_secs(2),
+    )
+    .await?;
 
     assert_eq!(env.payload["bool_text"], json!("true"));
     assert_eq!(env.payload["number_text"], json!("42"));
@@ -204,25 +186,16 @@ async fn postgres_source_polls_rows_and_sink_inserts_rows() -> anyhow::Result<()
     .execute(&pool)
     .await?;
 
-    let source = SqlQueryPollSource::new(
+    let env = drain_first_envelope(
         "postgres/src",
         SqlDriver::Postgres,
         &dsn,
         "SELECT id, email, active, age, score, ratio, weight, \
          profile, tags, created_at, updated_at, null_field \
          FROM users ORDER BY id",
-        Duration::from_secs(60),
-    );
-    let (tx, mut rx) = mpsc::channel(8);
-    let cancel = CancellationToken::new();
-    let c = cancel.clone();
-    let handle = tokio::spawn(async move { Box::new(source).run(tx, c).await });
-
-    let env = tokio::time::timeout(Duration::from_secs(5), rx.recv())
-        .await?
-        .expect("source closed before emitting");
-    cancel.cancel();
-    let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+        Duration::from_secs(5),
+    )
+    .await?;
 
     assert_eq!(env.payload["id"], json!(7));
     assert_eq!(env.payload["email"], json!("pg@example.com"));
@@ -332,4 +305,28 @@ fn sql_source_rejects_driver_dsn_mismatch() {
 #[allow(dead_code)]
 fn envelope(payload: serde_json::Value) -> Envelope {
     Envelope::new("test/src", payload)
+}
+
+/// Spawn a `SqlQueryPollSource`, await its first envelope, then cancel and
+/// join the task. Centralizes the spawn/timeout/cancel boilerplate the
+/// integration tests would otherwise repeat per driver.
+async fn drain_first_envelope(
+    source_id: &str,
+    driver: SqlDriver,
+    dsn: &str,
+    query: &str,
+    recv_timeout: Duration,
+) -> anyhow::Result<Envelope> {
+    let source = SqlQueryPollSource::new(source_id, driver, dsn, query, Duration::from_secs(60));
+    let (tx, mut rx) = mpsc::channel(8);
+    let cancel = CancellationToken::new();
+    let c = cancel.clone();
+    let handle = tokio::spawn(async move { Box::new(source).run(tx, c).await });
+
+    let env = tokio::time::timeout(recv_timeout, rx.recv())
+        .await?
+        .expect("source closed before emitting");
+    cancel.cancel();
+    let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+    Ok(env)
 }

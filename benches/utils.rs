@@ -180,6 +180,58 @@ pub async fn run_pipeline(envelope_count: usize, runtime: &str, transform_count:
     received.load(Ordering::SeqCst)
 }
 
+/// One Criterion benchmark sample: a `(group_id, function_id, value_str)`
+/// triple from `benchmark.json` plus the mean throughput in envelopes/sec.
+pub struct CriterionSample<'a> {
+    pub group: &'a str,
+    pub function: &'a str,
+    pub value_str: Option<&'a str>,
+    pub throughput: f64,
+}
+
+/// Recursively walk a Criterion result tree (typically `target/criterion`) and
+/// invoke `visit` with each leaf sample. Leaves are directories that contain
+/// both `new/estimates.json` and `new/benchmark.json`. Skips the `report`
+/// subdirectory Criterion writes for HTML output.
+pub fn visit_criterion_samples(dir: &std::path::Path, visit: &mut dyn FnMut(CriterionSample<'_>)) {
+    let new_dir = dir.join("new");
+    let estimates_path = new_dir.join("estimates.json");
+    let meta_path = new_dir.join("benchmark.json");
+    if estimates_path.exists() && meta_path.exists() {
+        // `?` chains on Option live inside this closure so an unreadable or
+        // malformed sample directory is just skipped, not propagated.
+        let mut parse = || -> Option<()> {
+            let e: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&estimates_path).ok()?).ok()?;
+            let m: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&meta_path).ok()?).ok()?;
+            let mean_ns = e["mean"]["point_estimate"].as_f64()?;
+            if mean_ns <= 0.0 {
+                return None;
+            }
+            let elements = m["throughput"]["Elements"].as_u64()?;
+            let throughput = elements as f64 / (mean_ns / 1e9);
+            visit(CriterionSample {
+                group: m["group_id"].as_str()?,
+                function: m["function_id"].as_str()?,
+                value_str: m["value_str"].as_str(),
+                throughput,
+            });
+            Some(())
+        };
+        parse();
+        return;
+    }
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() && path.file_name().map(|n| n != "report").unwrap_or(true) {
+                visit_criterion_samples(&path, visit);
+            }
+        }
+    }
+}
+
 pub fn print_table(
     title: &str,
     row_label: &str,

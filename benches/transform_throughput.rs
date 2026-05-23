@@ -92,41 +92,14 @@ fn bench_all_chains(c: &mut Criterion) {
 // --- Summary table ---
 
 fn walk_results(dir: &std::path::Path, out: &mut BTreeMap<(String, usize), f64>) {
-    let new_dir = dir.join("new");
-    let estimates_path = new_dir.join("estimates.json");
-    let meta_path = new_dir.join("benchmark.json");
-
-    if estimates_path.exists() && meta_path.exists() {
-        let mut parse = || -> Option<()> {
-            let e: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(&estimates_path).ok()?).ok()?;
-            let m: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(&meta_path).ok()?).ok()?;
-            let mean_ns = e["mean"]["point_estimate"].as_f64()?;
-            let elements = m["throughput"]["Elements"].as_u64()?;
-            let group = m["group_id"].as_str()?;
-            let function = m["function_id"].as_str()?;
-            let value_str = m["value_str"].as_str();
-            if mean_ns > 0.0 {
-                let rt = resolve_runtime(group)?;
-                let tc = parse_tc(function, value_str)?;
-                out.insert((rt.to_string(), tc), elements as f64 / (mean_ns / 1e9));
-            }
-            Some(())
-        };
-        parse();
-        return;
-    }
-
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() && path.file_name().map(|n| n != "report").unwrap_or(true) {
-            walk_results(&path, out);
+    utils::visit_criterion_samples(dir, &mut |sample| {
+        if let (Some(rt), Some(tc)) = (
+            resolve_runtime(sample.group),
+            parse_tc(sample.function, sample.value_str),
+        ) {
+            out.insert((rt.to_string(), tc), sample.throughput);
         }
-    }
+    });
 }
 
 fn resolve_runtime(group: &str) -> Option<&'static str> {
