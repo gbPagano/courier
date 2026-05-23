@@ -175,20 +175,42 @@ async fn postgres_source_polls_rows_and_sink_inserts_rows() -> anyhow::Result<()
         "CREATE TABLE users (
             id BIGINT PRIMARY KEY,
             email TEXT NOT NULL,
-            active BOOL NOT NULL
+            active BOOL NOT NULL,
+            age SMALLINT NOT NULL,
+            score INTEGER NOT NULL,
+            ratio REAL NOT NULL,
+            weight DOUBLE PRECISION NOT NULL,
+            profile JSON NOT NULL,
+            tags JSONB NOT NULL,
+            created_at TIMESTAMP NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL,
+            null_field TEXT
         )",
     )
     .execute(&pool)
     .await?;
-    sqlx::query("INSERT INTO users (id, email, active) VALUES (7, 'pg@example.com', true)")
-        .execute(&pool)
-        .await?;
+    sqlx::query(
+        "INSERT INTO users (
+            id, email, active, age, score, ratio, weight,
+            profile, tags, created_at, updated_at, null_field
+        ) VALUES (
+            7, 'pg@example.com', true, 30, 1000, 1.5::real, 2.5::double precision,
+            '{\"plan\":\"pro\"}'::json, '[\"a\",\"b\"]'::jsonb,
+            '2026-01-02 03:04:05'::timestamp,
+            '2026-01-02 03:04:05+00'::timestamptz,
+            NULL
+        )",
+    )
+    .execute(&pool)
+    .await?;
 
     let source = SqlQueryPollSource::new(
         "postgres/src",
         SqlDriver::Postgres,
         &dsn,
-        "SELECT id, email, active FROM users ORDER BY id",
+        "SELECT id, email, active, age, score, ratio, weight, \
+         profile, tags, created_at, updated_at, null_field \
+         FROM users ORDER BY id",
         Duration::from_secs(60),
     );
     let (tx, mut rx) = mpsc::channel(8);
@@ -205,6 +227,20 @@ async fn postgres_source_polls_rows_and_sink_inserts_rows() -> anyhow::Result<()
     assert_eq!(env.payload["id"], json!(7));
     assert_eq!(env.payload["email"], json!("pg@example.com"));
     assert_eq!(env.payload["active"], json!(true));
+    assert_eq!(env.payload["age"], json!(30));
+    assert_eq!(env.payload["score"], json!(1000));
+    assert_eq!(env.payload["ratio"], json!(1.5));
+    assert_eq!(env.payload["weight"], json!(2.5));
+    assert_eq!(env.payload["profile"], json!({"plan": "pro"}));
+    assert_eq!(env.payload["tags"], json!(["a", "b"]));
+    // NaiveDateTime renders as "YYYY-MM-DD HH:MM:SS".
+    assert_eq!(env.payload["created_at"], json!("2026-01-02 03:04:05"));
+    // DateTime<Utc>::to_rfc3339 keeps the UTC offset.
+    assert_eq!(
+        env.payload["updated_at"],
+        json!("2026-01-02T03:04:05+00:00")
+    );
+    assert_eq!(env.payload["null_field"], json!(null));
 
     sqlx::query(
         "CREATE TABLE snapshots (

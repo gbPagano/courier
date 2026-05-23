@@ -239,3 +239,98 @@ pub fn sql_sink_factory(
     }
     Ok(Box::new(sink))
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use crate::Registry;
+    use crate::config::{ErrorPolicyConfig, SinkSpec};
+    use crate::retry::RetryPolicy;
+
+    fn build(config: serde_json::Value, retry: Option<RetryPolicy>) -> anyhow::Result<()> {
+        Registry::with_builtins()
+            .build_sink(
+                "p/sink0",
+                SinkSpec {
+                    kind: "sql".into(),
+                    config,
+                    on_error: Some(ErrorPolicyConfig::Drop),
+                    retry,
+                },
+            )
+            .map(|_| ())
+    }
+
+    #[tokio::test]
+    async fn factory_builds_sqlite_sink_with_retry() {
+        build(
+            json!({
+                "driver": "sqlite",
+                "dsn": "sqlite::memory:",
+                "table": "items",
+                "columns": { "id": "payload.id" }
+            }),
+            Some(RetryPolicy::default()),
+        )
+        .expect("sqlite factory");
+    }
+
+    #[tokio::test]
+    async fn factory_builds_postgres_sink_without_retry() {
+        // `connect_lazy` doesn't open a TCP socket but does need a Tokio context.
+        build(
+            json!({
+                "driver": "postgres",
+                "dsn": "postgres://user:pw@127.0.0.1:5432/db",
+                "table": "items",
+                "columns": { "id": "payload.id" }
+            }),
+            None,
+        )
+        .expect("postgres factory");
+    }
+
+    #[test]
+    fn factory_rejects_invalid_config() {
+        let err =
+            build(json!({ "driver": "sqlite" }), None).expect_err("missing dsn / table / columns");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("invalid config for component type 'sql'"),
+            "{msg}",
+        );
+    }
+
+    #[test]
+    fn factory_rejects_driver_dsn_mismatch() {
+        let err = build(
+            json!({
+                "driver": "postgres",
+                "dsn": "sqlite::memory:",
+                "table": "items",
+                "columns": { "id": "payload.id" }
+            }),
+            None,
+        )
+        .expect_err("driver/dsn mismatch");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("dsn does not match driver"), "{msg}");
+    }
+
+    #[test]
+    fn factory_rejects_empty_columns() {
+        let err = build(
+            json!({
+                "driver": "sqlite",
+                "dsn": "sqlite::memory:",
+                "table": "items",
+                "columns": {}
+            }),
+            None,
+        )
+        .expect_err("empty columns");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("columns must not be empty"), "{msg}");
+    }
+}

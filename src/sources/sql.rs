@@ -188,52 +188,53 @@ fn pg_row_to_json(row: sqlx::postgres::PgRow) -> Result<Value> {
     for column in row.columns() {
         let name = column.name();
         let type_name = column.type_info().name();
-        let value = match type_name {
-            "BOOL" => row
-                .try_get::<Option<bool>, _>(name)?
-                .map(Value::Bool)
-                .unwrap_or(Value::Null),
-            "INT2" => row
-                .try_get::<Option<i16>, _>(name)?
-                .map(|v| Value::Number(Number::from(v)))
-                .unwrap_or(Value::Null),
-            "INT4" => row
-                .try_get::<Option<i32>, _>(name)?
-                .map(|v| Value::Number(Number::from(v)))
-                .unwrap_or(Value::Null),
-            "INT8" => row
-                .try_get::<Option<i64>, _>(name)?
-                .map(|v| Value::Number(Number::from(v)))
-                .unwrap_or(Value::Null),
-            "FLOAT4" => row
-                .try_get::<Option<f32>, _>(name)?
-                .and_then(|v| Number::from_f64(v as f64))
-                .map(Value::Number)
-                .unwrap_or(Value::Null),
-            "FLOAT8" => row
-                .try_get::<Option<f64>, _>(name)?
-                .and_then(Number::from_f64)
-                .map(Value::Number)
-                .unwrap_or(Value::Null),
-            "JSON" | "JSONB" => row
-                .try_get::<Option<Value>, _>(name)?
-                .unwrap_or(Value::Null),
-            "TIMESTAMP" => row
-                .try_get::<Option<chrono::NaiveDateTime>, _>(name)?
-                .map(|v| Value::String(v.to_string()))
-                .unwrap_or(Value::Null),
-            "TIMESTAMPTZ" => row
-                .try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(name)?
-                .map(|v| Value::String(v.to_rfc3339()))
-                .unwrap_or(Value::Null),
-            _ => row
-                .try_get::<Option<String>, _>(name)?
-                .map(Value::String)
-                .unwrap_or(Value::Null),
-        };
-        object.insert(name.to_string(), value);
+        object.insert(name.to_string(), pg_column_value(&row, name, type_name)?);
     }
     Ok(Value::Object(object))
+}
+
+/// Decode a single Postgres column into a JSON value. Unknown / unsupported
+/// types fall back to TEXT — many Postgres types serialize cleanly that way.
+fn pg_column_value(row: &sqlx::postgres::PgRow, name: &str, type_name: &str) -> Result<Value> {
+    Ok(match type_name {
+        "BOOL" => pg_nullable(row, name, Value::Bool)?,
+        "INT2" => pg_nullable(row, name, |v: i16| Value::Number(Number::from(v)))?,
+        "INT4" => pg_nullable(row, name, |v: i32| Value::Number(Number::from(v)))?,
+        "INT8" => pg_nullable(row, name, |v: i64| Value::Number(Number::from(v)))?,
+        "FLOAT4" => pg_nullable(row, name, |v: f32| {
+            Number::from_f64(v as f64)
+                .map(Value::Number)
+                .unwrap_or(Value::Null)
+        })?,
+        "FLOAT8" => pg_nullable(row, name, |v: f64| {
+            Number::from_f64(v)
+                .map(Value::Number)
+                .unwrap_or(Value::Null)
+        })?,
+        "JSON" | "JSONB" => row
+            .try_get::<Option<Value>, _>(name)?
+            .unwrap_or(Value::Null),
+        "TIMESTAMP" => pg_nullable(row, name, |v: chrono::NaiveDateTime| {
+            Value::String(v.to_string())
+        })?,
+        "TIMESTAMPTZ" => pg_nullable(row, name, |v: chrono::DateTime<chrono::Utc>| {
+            Value::String(v.to_rfc3339())
+        })?,
+        _ => pg_nullable(row, name, Value::String)?,
+    })
+}
+
+/// Read an optional column of type `T` and turn the present value into a JSON
+/// node via `into`, returning `Value::Null` when the column was SQL NULL.
+fn pg_nullable<T, F>(row: &sqlx::postgres::PgRow, name: &str, into: F) -> Result<Value>
+where
+    T: for<'r> sqlx::Decode<'r, sqlx::Postgres> + sqlx::Type<sqlx::Postgres>,
+    F: FnOnce(T) -> Value,
+{
+    Ok(row
+        .try_get::<Option<T>, _>(name)?
+        .map(into)
+        .unwrap_or(Value::Null))
 }
 
 fn sqlite_row_to_json(row: sqlx::sqlite::SqliteRow) -> Result<Value> {

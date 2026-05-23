@@ -113,67 +113,59 @@ impl WriteOne for FileSink {
     }
 
     async fn write(&self, env: &Envelope) -> Result<()> {
-        let mut buf = String::new();
-
         match &self.format {
-            Format::Jsonl { body } => {
-                let value = match body {
-                    BodyFormat::Payload => serde_json::to_string(&env.payload)?,
-                    BodyFormat::Envelope => serde_json::to_string(env)?,
-                };
-                buf.push_str(&value);
-                buf.push('\n');
-            }
-            Format::Csv { columns } => {
-                let env_value = serde_json::to_value(env)?;
-                let mut state = self.state.lock().await;
-                self.ensure_open(&mut state)?;
-                let wrote_header = state.needs_header;
-                if state.needs_header {
-                    write_csv_row(&mut buf, columns.iter().map(String::as_str));
-                }
-                let row = columns.iter().map(|col| extract_csv_cell(&env_value, col));
-                let row_strings: Vec<String> = row.collect();
-                write_csv_row(&mut buf, row_strings.iter().map(String::as_str));
-
-                state
-                    .writer
-                    .as_mut()
-                    .expect("writer is opened above")
-                    .write_all(buf.as_bytes())
-                    .await
-                    .map_err(|e| {
-                        anyhow!("write to {} failed: {e}", redact_secret_path(&self.path))
-                    })?;
-                state
-                    .writer
-                    .as_mut()
-                    .expect("writer is opened above")
-                    .flush()
-                    .await
-                    .map_err(|e| {
-                        anyhow!("flush of {} failed: {e}", redact_secret_path(&self.path))
-                    })?;
-                if wrote_header {
-                    state.needs_header = false;
-                }
-                return Ok(());
-            }
+            Format::Jsonl { body } => self.write_jsonl(env, *body).await,
+            Format::Csv { columns } => self.write_csv(env, columns).await,
         }
+    }
+}
 
+impl FileSink {
+    async fn write_jsonl(&self, env: &Envelope, body: BodyFormat) -> Result<()> {
+        let line = match body {
+            BodyFormat::Payload => serde_json::to_string(&env.payload)?,
+            BodyFormat::Envelope => serde_json::to_string(env)?,
+        };
+        let mut buf = line;
+        buf.push('\n');
         let mut state = self.state.lock().await;
         self.ensure_open(&mut state)?;
-        state
-            .writer
-            .as_mut()
-            .expect("writer is opened above")
-            .write_all(buf.as_bytes())
+        self.commit(&mut state, buf.as_bytes()).await
+    }
+
+    async fn write_csv(&self, env: &Envelope, columns: &[String]) -> Result<()> {
+        let env_value = serde_json::to_value(env)?;
+        let mut state = self.state.lock().await;
+        self.ensure_open(&mut state)?;
+        let wrote_header = state.needs_header;
+        let mut buf = String::new();
+        if wrote_header {
+            write_csv_row(&mut buf, columns.iter().map(String::as_str));
+        }
+        let row_strings: Vec<String> = columns
+            .iter()
+            .map(|col| extract_csv_cell(&env_value, col))
+            .collect();
+        write_csv_row(&mut buf, row_strings.iter().map(String::as_str));
+
+        self.commit(&mut state, buf.as_bytes()).await?;
+        // Only clear `needs_header` after a successful flush so a write that
+        // fails mid-flight leaves the header pending for the next attempt.
+        if wrote_header {
+            state.needs_header = false;
+        }
+        Ok(())
+    }
+
+    /// Append `bytes` to the open writer and flush. The writer must already be
+    /// opened (the callers run `ensure_open` under the same lock).
+    async fn commit(&self, state: &mut WriterState, bytes: &[u8]) -> Result<()> {
+        let writer = state.writer.as_mut().expect("writer is opened above");
+        writer
+            .write_all(bytes)
             .await
             .map_err(|e| anyhow!("write to {} failed: {e}", redact_secret_path(&self.path)))?;
-        state
-            .writer
-            .as_mut()
-            .expect("writer is opened above")
+        writer
             .flush()
             .await
             .map_err(|e| anyhow!("flush of {} failed: {e}", redact_secret_path(&self.path)))?;

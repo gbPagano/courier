@@ -168,6 +168,17 @@ impl Expr {
     }
 }
 
+/// Map an escape-sequence character to its decoded form. Unknown escapes
+/// pass through verbatim (e.g. `\é` → `é`), matching the previous behavior.
+fn unescape(escaped: char) -> char {
+    match escaped {
+        'n' => '\n',
+        'r' => '\r',
+        't' => '\t',
+        other => other,
+    }
+}
+
 fn compare_values(left: &Value, op: CompareOp, right: &Value) -> bool {
     match op {
         CompareOp::Eq => left == right,
@@ -289,173 +300,123 @@ impl<'a> Lexer<'a> {
             return;
         }
         let ch = self.input[self.pos..].chars().next().unwrap();
+        self.current = Some(self.lex_token(ch));
+    }
 
+    fn lex_token(&mut self, ch: char) -> Token {
         match ch {
-            '(' => {
+            '(' => self.consume(1, Token::LParen),
+            ')' => self.consume(1, Token::RParen),
+            '.' => self.consume(1, Token::Dot),
+            '!' => self.pair_or_single('=', Token::Ne, Token::Not),
+            '<' => self.pair_or_single('=', Token::Le, Token::Lt),
+            '>' => self.pair_or_single('=', Token::Ge, Token::Gt),
+            '=' => self.pair_required('=', Token::Eq),
+            '&' => self.pair_required('&', Token::And),
+            '|' => self.pair_required('|', Token::Or),
+            '"' | '\'' => self.lex_string(ch),
+            c if c.is_ascii_digit() || c == '-' => self.lex_number(c),
+            c if c.is_alphabetic() || c == '_' => self.lex_ident(),
+            _ => self.set_error(format!(
+                "filter: unexpected character '{ch}' at position {}",
+                self.pos
+            )),
+        }
+    }
+
+    /// Advance `n` ASCII bytes and return the matching token.
+    fn consume(&mut self, n: usize, tok: Token) -> Token {
+        self.pos += n;
+        tok
+    }
+
+    /// Two-character operator (`pair`) with single-character fallback (`single`).
+    fn pair_or_single(&mut self, second: char, pair: Token, single: Token) -> Token {
+        if self.peek_char() == Some(second) {
+            self.consume(2, pair)
+        } else {
+            self.consume(1, single)
+        }
+    }
+
+    /// Two-character operator where the single form is invalid — for `==`,
+    /// `&&`, `||`, all of which are the same character repeated.
+    fn pair_required(&mut self, ch: char, pair: Token) -> Token {
+        if self.peek_char() == Some(ch) {
+            return self.consume(2, pair);
+        }
+        self.set_error(format!(
+            "filter: unexpected character '{ch}' at position {} (did you mean '{ch}{ch}'?)",
+            self.pos
+        ))
+    }
+
+    fn set_error(&mut self, msg: String) -> Token {
+        self.error = Some(anyhow::anyhow!(msg));
+        Token::Eof
+    }
+
+    fn lex_string(&mut self, quote: char) -> Token {
+        self.pos += quote.len_utf8();
+        let mut s = String::new();
+        while self.pos < self.input.len() {
+            let c = self.input[self.pos..].chars().next().unwrap();
+            if c == quote {
+                self.pos += c.len_utf8();
+                return Token::Str(s);
+            }
+            if c == '\\' {
                 self.pos += 1;
-                self.current = Some(Token::LParen);
+                if self.pos >= self.input.len() {
+                    break;
+                }
+                let escaped = self.input[self.pos..].chars().next().unwrap();
+                s.push(unescape(escaped));
+                self.pos += escaped.len_utf8();
+            } else {
+                s.push(c);
+                self.pos += c.len_utf8();
             }
-            ')' => {
+        }
+        self.set_error("filter: unterminated string literal".into())
+    }
+
+    fn lex_number(&mut self, first: char) -> Token {
+        let start = self.pos;
+        if first == '-' {
+            self.pos += 1;
+        }
+        while self.pos < self.input.len() {
+            let c = self.input[self.pos..].chars().next().unwrap();
+            if c.is_ascii_digit() || c == '.' {
                 self.pos += 1;
-                self.current = Some(Token::RParen);
+            } else {
+                break;
             }
-            '.' => {
-                self.pos += 1;
-                self.current = Some(Token::Dot);
+        }
+        let num_str = &self.input[start..self.pos];
+        match num_str.parse::<serde_json::Number>() {
+            Ok(num) => Token::Number(num),
+            Err(_) => self.set_error(format!("filter: invalid number '{num_str}'")),
+        }
+    }
+
+    fn lex_ident(&mut self) -> Token {
+        let start = self.pos;
+        while self.pos < self.input.len() {
+            let c = self.input[self.pos..].chars().next().unwrap();
+            if c.is_alphanumeric() || c == '_' {
+                self.pos += c.len_utf8();
+            } else {
+                break;
             }
-            '!' => {
-                if self.peek_char() == Some('=') {
-                    self.pos += 2;
-                    self.current = Some(Token::Ne);
-                } else {
-                    self.pos += 1;
-                    self.current = Some(Token::Not);
-                }
-            }
-            '=' => {
-                if self.peek_char() == Some('=') {
-                    self.pos += 2;
-                    self.current = Some(Token::Eq);
-                } else {
-                    self.error = Some(anyhow::anyhow!(
-                        "filter: unexpected character '=' at position {} (did you mean '=='?)",
-                        self.pos
-                    ));
-                    self.current = Some(Token::Eof);
-                }
-            }
-            '<' => {
-                if self.peek_char() == Some('=') {
-                    self.pos += 2;
-                    self.current = Some(Token::Le);
-                } else {
-                    self.pos += 1;
-                    self.current = Some(Token::Lt);
-                }
-            }
-            '>' => {
-                if self.peek_char() == Some('=') {
-                    self.pos += 2;
-                    self.current = Some(Token::Ge);
-                } else {
-                    self.pos += 1;
-                    self.current = Some(Token::Gt);
-                }
-            }
-            '&' => {
-                if self.peek_char() == Some('&') {
-                    self.pos += 2;
-                    self.current = Some(Token::And);
-                } else {
-                    self.error = Some(anyhow::anyhow!(
-                        "filter: unexpected character '&' at position {} (did you mean '&&'?)",
-                        self.pos
-                    ));
-                    self.current = Some(Token::Eof);
-                }
-            }
-            '|' => {
-                if self.peek_char() == Some('|') {
-                    self.pos += 2;
-                    self.current = Some(Token::Or);
-                } else {
-                    self.error = Some(anyhow::anyhow!(
-                        "filter: unexpected character '|' at position {} (did you mean '||'?)",
-                        self.pos
-                    ));
-                    self.current = Some(Token::Eof);
-                }
-            }
-            '"' | '\'' => {
-                let quote = ch;
-                self.pos += 1;
-                let mut s = String::new();
-                let mut closed = false;
-                while self.pos < self.input.len() {
-                    let c = self.input[self.pos..].chars().next().unwrap();
-                    if c == quote {
-                        self.pos += 1;
-                        closed = true;
-                        break;
-                    }
-                    if c == '\\' {
-                        self.pos += 1;
-                        if self.pos >= self.input.len() {
-                            break;
-                        }
-                        let escaped = self.input[self.pos..].chars().next().unwrap();
-                        match escaped {
-                            'n' => s.push('\n'),
-                            'r' => s.push('\r'),
-                            't' => s.push('\t'),
-                            '\\' => s.push('\\'),
-                            '"' => s.push('"'),
-                            '\'' => s.push('\''),
-                            other => s.push(other),
-                        }
-                        self.pos += escaped.len_utf8();
-                    } else {
-                        s.push(c);
-                        self.pos += c.len_utf8();
-                    }
-                }
-                if !closed {
-                    self.error = Some(anyhow::anyhow!("filter: unterminated string literal"));
-                    self.current = Some(Token::Eof);
-                } else {
-                    self.current = Some(Token::Str(s));
-                }
-            }
-            c if c.is_ascii_digit() || c == '-' => {
-                let start = self.pos;
-                if c == '-' {
-                    self.pos += 1;
-                }
-                while self.pos < self.input.len() {
-                    let c = self.input[self.pos..].chars().next().unwrap();
-                    if c.is_ascii_digit() || c == '.' {
-                        self.pos += 1;
-                    } else {
-                        break;
-                    }
-                }
-                let num_str = &self.input[start..self.pos];
-                match num_str.parse::<serde_json::Number>() {
-                    Ok(num) => self.current = Some(Token::Number(num)),
-                    Err(_) => {
-                        self.error = Some(anyhow::anyhow!("filter: invalid number '{}'", num_str));
-                        self.current = Some(Token::Eof);
-                    }
-                }
-            }
-            c if c.is_alphabetic() || c == '_' => {
-                let start = self.pos;
-                while self.pos < self.input.len() {
-                    let c = self.input[self.pos..].chars().next().unwrap();
-                    if c.is_alphanumeric() || c == '_' {
-                        self.pos += c.len_utf8();
-                    } else {
-                        break;
-                    }
-                }
-                let ident = &self.input[start..self.pos];
-                let token = match ident {
-                    "true" => Token::Bool(true),
-                    "false" => Token::Bool(false),
-                    "null" => Token::Null,
-                    "exists" => Token::Exists,
-                    _ => Token::Ident(ident.to_string()),
-                };
-                self.current = Some(token);
-            }
-            _ => {
-                self.error = Some(anyhow::anyhow!(
-                    "filter: unexpected character '{}' at position {}",
-                    ch,
-                    self.pos
-                ));
-                self.current = Some(Token::Eof);
-            }
+        }
+        match &self.input[start..self.pos] {
+            "true" => Token::Bool(true),
+            "false" => Token::Bool(false),
+            "null" => Token::Null,
+            "exists" => Token::Exists,
+            ident => Token::Ident(ident.to_string()),
         }
     }
 
