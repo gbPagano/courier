@@ -51,6 +51,7 @@ opentelemetry = { version = "0.31.0", features = ["metrics", "trace", "logs"] }
 opentelemetry_sdk = { version = "0.31.0", features = ["rt-tokio", "metrics", "trace", "logs"] }
 opentelemetry-otlp = { version = "0.31.1", default-features = false, features = ["grpc-tonic", "metrics", "trace", "logs"] }
 opentelemetry-appender-tracing = "0.31.1"
+object_store = { version = "0.13.2", features = ["fs", "aws"] }
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["async_tokio"] }

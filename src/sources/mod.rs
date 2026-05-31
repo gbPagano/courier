@@ -11,6 +11,7 @@ pub mod jsonl_file;
 pub mod kafka;
 mod retry;
 pub mod sql;
+pub mod object_storage;
 
 /// A pipeline source.
 ///
